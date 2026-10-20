@@ -3,20 +3,32 @@ from datetime import datetime
 from extensions import db
 from models.administrador import Administrador
 from models.cancha import Cancha
+from models.cancha_imagen import CanchaImagen
 from models.categoria import Categoria
 from models.evento import Evento
 from models.historial_estado_cancha import HistorialEstadoCancha
 from models.historial_precio_cancha import HistorialPrecioCancha
 from models.reserva import Reserva
+from services.tarifas_service import (
+    HORA_APERTURA_UI,
+    HORA_CIERRE_UI,
+    horario_general,
+)
 from validators.cancha_validator import (
+    MAX_IMAGENES_CANCHA,
     convertir_precio,
     convertir_id_entero,
     convertir_bool,
     convertir_hora,
     validar_estado,
+    validar_filtro_estado,
+    validar_archivo_imagen,
 )
 
-ESTADOS_VALIDOS = ("disponible", "mantenimiento", "fuera_servicio")
+ESTADOS_VALIDOS = ("disponible", "mantenimiento", "inactivo")
+
+#: Reserva pendiente/confirmada que está en juego ahora mismo = cancha OCUPADA.
+ESTADOS_RESERVA_ACTIVOS = ("pendiente", "confirmada")
 
 
 def obtener_categoria(id_categoria):
@@ -33,12 +45,125 @@ def obtener_administrador(id_administrador):
     return administrador
 
 
-def listar_canchas(estado=None):
+def administrador_del_usuario(id_usuario):
+    """Perfil de administrador del usuario autenticado."""
+    administrador = Administrador.query.filter_by(id_usuario=id_usuario).first()
+    if not administrador:
+        raise ValueError(
+            "El usuario autenticado no tiene perfil de administrador; "
+            "no se puede asignar la cancha."
+        )
+    return administrador
+
+
+# ============================================================
+# ESTADO CALCULADO (disponible / ocupada / mantenimiento / inactivo)
+# ============================================================
+def ids_canchas_ocupadas_ahora():
+    """Ids de las canchas con una reserva activa en este mismo momento."""
+    ahora = datetime.now()
+    filas = (
+        db.session.query(Reserva.id_cancha)
+        .filter(
+            Reserva.estado_reserva.in_(ESTADOS_RESERVA_ACTIVOS),
+            Reserva.fecha_reserva == ahora.date(),
+            Reserva.hora_inicio <= ahora.time(),
+            Reserva.hora_fin > ahora.time(),
+        )
+        .distinct()
+        .all()
+    )
+    return {f[0] for f in filas}
+
+
+def estado_calculado(cancha, ocupadas=None):
+    """
+    Estado real que ve el usuario:
+    - inactivo / mantenimiento: el que eligió el administrador.
+    - ocupada: estaba disponible pero hay una reserva activa AHORA.
+    - disponible: lista para reservar.
+    """
+    if cancha.estado != "disponible":
+        return cancha.estado
+    if ocupadas is None:
+        ocupadas = ids_canchas_ocupadas_ahora()
+    return "ocupada" if cancha.id_cancha in ocupadas else "disponible"
+
+
+def serializar(cancha, ocupadas=None):
+    """to_dict de la cancha + estado calculado e info de la galería."""
+    if ocupadas is None:
+        ocupadas = ids_canchas_ocupadas_ahora()
+    datos = cancha.to_dict()
+    calculado = estado_calculado(cancha, ocupadas)
+    datos["estado_calculado"] = calculado
+    datos["reserva_habilitada"] = calculado == "disponible"
+    datos["total_imagenes"] = len(cancha.imagenes)
+    primera = cancha.imagenes[0] if cancha.imagenes else None
+    datos["imagen_preview_id"] = primera.id_imagen if primera else None
+    return datos
+
+
+# ============================================================
+# LISTADO CON FILTROS
+# ============================================================
+def _orden_por(nombre_orden):
+    ordenes = {
+        "nombre_asc": Cancha.nombre_cancha.asc(),
+        "nombre_desc": Cancha.nombre_cancha.desc(),
+        "precio_asc": Cancha.precio_hora.asc(),
+        "precio_desc": Cancha.precio_hora.desc(),
+        "recientes": Cancha.id_cancha.desc(),
+    }
+    return ordenes.get(nombre_orden, ordenes["nombre_asc"])
+
+
+def listar_canchas(estado=None, q=None, deporte=None, orden=None, solo_visibles=False):
+    """
+    Listado con filtros combinables:
+    - q: busca por nombre, deporte o ubicación (parcial, sin distinción de mayúsculas).
+    - deporte: nombre del deporte (parcial).
+    - estado: disponible | ocupada (calculado) | mantenimiento | inactivo.
+    - orden: nombre_asc | nombre_desc | precio_asc | precio_desc | recientes.
+    - solo_visibles: oculta las canchas inactivas (vista del cliente).
+    """
     query = Cancha.query
-    if estado:
-        estado = validar_estado(estado)
-        query = query.filter_by(estado=estado)
-    return query.order_by(Cancha.id_cancha.asc()).all()
+
+    if solo_visibles:
+        query = query.filter(Cancha.estado != "inactivo")
+
+    if q and str(q).strip():
+        like = f"%{str(q).strip()}%"
+        query = query.filter(
+            db.or_(
+                Cancha.nombre_cancha.ilike(like),
+                Cancha.tipo_deporte.ilike(like),
+                Cancha.ubicacion.ilike(like),
+            )
+        )
+
+    if deporte and str(deporte).strip():
+        query = query.filter(Cancha.tipo_deporte.ilike(f"%{str(deporte).strip()}%"))
+
+    if estado and str(estado).strip():
+        estado = validar_filtro_estado(estado)
+        if estado == "ocupada":
+            ocupadas = ids_canchas_ocupadas_ahora()
+            query = query.filter(
+                Cancha.estado == "disponible",
+                Cancha.id_cancha.in_(ocupadas) if ocupadas else db.false(),
+            )
+        else:
+            query = query.filter(Cancha.estado == estado)
+
+    return query.order_by(_orden_por(orden)).all()
+
+
+def listar_canchas_serializado(ocupadas=None, **kwargs):
+    canchas = listar_canchas(**kwargs)
+    if ocupadas is None:
+        ocupadas = ids_canchas_ocupadas_ahora()
+    return [serializar(c, ocupadas) for c in canchas]
 
 
 def obtener_cancha_por_id(id_cancha):
@@ -80,18 +205,23 @@ def registrar_cambio_precio(cancha, nuevo_precio, id_usuario=None):
     )
 
 
-def crear_cancha(datos_texto, datos_crudos):
+def crear_cancha(datos_texto, datos_crudos, id_usuario=None):
     precio = convertir_precio(datos_crudos.get("precio_hora"))
     id_categoria = convertir_id_entero(datos_crudos.get("id_categoria"), "id_categoria")
-    id_administrador = convertir_id_entero(
-        datos_crudos.get("id_administrador"), "id_administrador"
-    )
+
+    if id_usuario is not None:
+        administrador = administrador_del_usuario(id_usuario)
+        id_administrador = administrador.id_administrador
+    else:
+        id_administrador = convertir_id_entero(
+            datos_crudos.get("id_administrador"), "id_administrador"
+        )
+        obtener_administrador(id_administrador)
 
     obtener_categoria(id_categoria)
-    obtener_administrador(id_administrador)
 
-    # El estado inicial SIEMPRE es DISPONIBLE según la lógica de negocio.
-    estado = "disponible"
+    # Estado inicial por defecto DISPONIBLE; se puede crear ya en mantenimiento.
+    estado = validar_estado(datos_crudos.get("estado") or "disponible")
     techada = convertir_bool(datos_crudos.get("techada", False))
 
     nueva = Cancha(
@@ -103,8 +233,15 @@ def crear_cancha(datos_texto, datos_crudos):
         techada=techada,
         superficie=datos_texto.get("superficie"),
         imagen_url=(datos_crudos.get("imagen_url") or None),
-        horario_apertura=convertir_hora(datos_crudos.get("horario_apertura")),
-        horario_cierre=convertir_hora(datos_crudos.get("horario_cierre")),
+        # Horario general: sin el, la cancha no tendria slots reservables.
+        horario_apertura=(
+            convertir_hora(datos_crudos.get("horario_apertura"))
+            or HORA_APERTURA_UI
+        ),
+        horario_cierre=(
+            convertir_hora(datos_crudos.get("horario_cierre"))
+            or HORA_CIERRE_UI
+        ),
         dias_atencion=(datos_crudos.get("dias_atencion") or None),
         id_categoria=id_categoria,
         id_administrador=id_administrador,
@@ -140,11 +277,14 @@ def modificar_cancha(id_cancha, datos_texto, datos_crudos, id_usuario=None):
         imagen = datos_crudos["imagen_url"]
         cancha.imagen_url = (imagen.strip() or None) if isinstance(imagen, str) else None
 
-    if "horario_apertura" in datos_crudos:
+    # Horario general de la cancha: es el respaldo de los dias que no tienen
+    # fila propia. Un valor vacio se ignora (no se borra el horario) para que
+    # un formulario vacio no deje la cancha sin slots reservables.
+    if datos_crudos.get("horario_apertura"):
         cancha.horario_apertura = convertir_hora(
             datos_crudos["horario_apertura"], "horario_apertura"
         )
-    if "horario_cierre" in datos_crudos:
+    if datos_crudos.get("horario_cierre"):
         cancha.horario_cierre = convertir_hora(
             datos_crudos["horario_cierre"], "horario_cierre"
         )
@@ -155,6 +295,11 @@ def modificar_cancha(id_cancha, datos_texto, datos_crudos, id_usuario=None):
     if cancha.horario_apertura and cancha.horario_cierre:
         if cancha.horario_cierre <= cancha.horario_apertura:
             raise ValueError("El horario de cierre debe ser posterior al de apertura.")
+    else:
+        # Nunca dejar la cancha sin horario general: se usa el de atencion.
+        apertura_general, cierre_general = horario_general(cancha)
+        cancha.horario_apertura = apertura_general
+        cancha.horario_cierre = cierre_general
 
     if "estado" in datos_crudos:
         nuevo_estado = validar_estado(datos_crudos["estado"])
@@ -186,15 +331,15 @@ def eliminar_cancha(id_cancha):
     if Reserva.query.filter_by(id_cancha=id_cancha).count() > 0:
         raise ValueError(
             "La cancha tiene reservas asociadas. No se puede eliminar; "
-            "márcala como fuera_servicio."
+            "márcala como inactivo."
         )
     if Evento.query.filter_by(id_cancha=id_cancha).count() > 0:
         raise ValueError(
             "La cancha tiene eventos asociados. No se puede eliminar; "
-            "márcala como fuera_servicio."
+            "márcala como inactivo."
         )
 
-    db.session.delete(cancha)
+    db.session.delete(cancha)  # borra en cascada sus imágenes
     db.session.commit()
 
 
@@ -205,3 +350,74 @@ def cambiar_estado_cancha(id_cancha, nuevo_estado, motivo=None, id_usuario=None)
     cancha.estado = nuevo_estado
     db.session.commit()
     return cancha
+
+
+# ============================================================
+# GALERÍA DE IMÁGENES (se guardan en la base de datos)
+# ============================================================
+def listar_imagenes(id_cancha):
+    cancha = obtener_cancha_por_id(id_cancha)
+    return list(cancha.imagenes)
+
+
+def obtener_imagen(id_cancha, id_imagen):
+    imagen = CanchaImagen.query.filter_by(
+        id_cancha=id_cancha, id_imagen=id_imagen
+    ).first()
+    if not imagen:
+        raise ValueError("La imagen no existe.")
+    return imagen
+
+
+def agregar_imagenes(id_cancha, archivos):
+    """
+    Agrega fotos a la galería de la cancha. Valida que sean JPG/PNG/WEBP reales,
+    de hasta 4 MB cada una, y que no se supere el máximo de fotos por cancha.
+    """
+    cancha = obtener_cancha_por_id(id_cancha)
+
+    archivos = [f for f in (archivos or []) if f and getattr(f, "filename", "")]
+    if not archivos:
+        raise ValueError("Debes adjuntar al menos una imagen.")
+
+    restantes = MAX_IMAGENES_CANCHA - len(cancha.imagenes)
+    if restantes <= 0:
+        raise ValueError(
+            f"La cancha ya tiene el máximo de {MAX_IMAGENES_CANCHA} imágenes."
+        )
+    if len(archivos) > restantes:
+        raise ValueError(
+            f"Solo puedes agregar {restantes} imagen(es) más: la cancha ya tiene "
+            f"{len(cancha.imagenes)} de {MAX_IMAGENES_CANCHA}."
+        )
+
+    orden = max((img.orden for img in cancha.imagenes), default=0)
+    nuevas = []
+    for archivo in archivos:
+        datos, mime, nombre = validar_archivo_imagen(archivo)
+        orden += 1
+        imagen = CanchaImagen(
+            id_cancha=cancha.id_cancha,
+            orden=orden,
+            mime_type=mime,
+            nombre_archivo=nombre,
+            tamano_bytes=len(datos),
+            data=datos,
+        )
+        db.session.add(imagen)
+        nuevas.append(imagen)
+
+    db.session.commit()
+    return nuevas
+
+
+def eliminar_imagen(id_cancha, id_imagen):
+    imagen = obtener_imagen(id_cancha, id_imagen)
+    db.session.delete(imagen)
+    db.session.commit()
+    # Reordena para que la galería no quede con huecos.
+    imagenes = listar_imagenes(id_cancha)
+    for posicion, img in enumerate(imagenes, start=1):
+        img.orden = posicion
+    db.session.commit()
+    return imagenes

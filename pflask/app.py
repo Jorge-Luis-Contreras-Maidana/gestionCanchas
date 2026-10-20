@@ -45,11 +45,15 @@ def inicio():
             ],
             "canchas": [
                 "POST /api/canchas",
-                "GET /api/canchas",
+                "GET /api/canchas?q=&deporte=&estado=&orden=",
                 "GET /api/canchas/<id>",
                 "PATCH /api/canchas/<id>",
                 "DELETE /api/canchas/<id>",
                 "PATCH /api/canchas/<id>/estado",
+                "GET /api/canchas/<id>/imagenes",
+                "GET /api/canchas/<id>/imagenes/<id_imagen>",
+                "POST /api/canchas/<id>/imagenes (multipart, admin)",
+                "DELETE /api/canchas/<id>/imagenes/<id_imagen> (admin)",
             ],
             "pagos": [
                 "POST /api/pagos",

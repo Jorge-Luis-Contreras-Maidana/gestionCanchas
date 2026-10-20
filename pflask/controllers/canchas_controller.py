@@ -1,7 +1,10 @@
-from flask import Blueprint, g, jsonify, request
+from io import BytesIO
+
+from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db
+from models import cancha_imagen  # noqa: F401  (registra el mapeo CanchaImagen)
 from services import canchas_service
 from services.auth_service import _extract_bearer_token, decode_token, require_auth
 from utils.responses import error_json
@@ -17,11 +20,13 @@ def crear_cancha():
 
     try:
         datos_texto = validar_datos_cancha(data)
-        cancha = canchas_service.crear_cancha(datos_texto, data)
+        cancha = canchas_service.crear_cancha(
+            datos_texto, data, id_usuario=getattr(g, "current_user", None).id_usuario
+        )
 
         return jsonify({
             "mensaje": "Cancha registrada con éxito.",
-            "cancha": cancha.to_dict(),
+            "cancha": canchas_service.serializar(cancha),
         }), 201
 
     except ValueError as e:
@@ -50,16 +55,27 @@ def _rol_de_token():
 
 @canchas_bp.get("")
 def obtener_canchas():
+    """
+    Listado con filtros combinables:
+    ?q= (nombre/deporte/ubicación) &deporte= &estado= &orden=
+
+    Empleado y administrador ven todo (incluidas inactivas). El cliente ve
+    todas las canchas activas: disponibles, ocupadas y en mantenimiento, para
+    que el estado se refleje en su vista; reserva_habilitada indica si puede
+    reservar.
+    """
     try:
         rol = _rol_de_token()
-        # Empleado y administrador ven todas (pueden filtrar por estado).
-        # Cliente y público ven únicamente las Disponibles.
-        if rol in ("empleado", "administrador"):
-            estado = request.args.get("estado")
-            canchas = canchas_service.listar_canchas(estado)
-        else:
-            canchas = canchas_service.listar_canchas("disponible")
-        return jsonify([c.to_dict() for c in canchas]), 200
+        es_staff = rol in ("empleado", "administrador")
+
+        canchas = canchas_service.listar_canchas_serializado(
+            estado=request.args.get("estado"),
+            q=request.args.get("q"),
+            deporte=request.args.get("deporte"),
+            orden=request.args.get("orden"),
+            solo_visibles=not es_staff,
+        )
+        return jsonify(canchas), 200
     except ValueError as e:
         return error_json(str(e))
     except Exception as e:
@@ -73,11 +89,82 @@ def obtener_cancha(id_cancha):
 
     try:
         cancha = canchas_service.obtener_cancha_por_id(id_cancha)
-        return jsonify(cancha.to_dict()), 200
+        return jsonify(canchas_service.serializar(cancha)), 200
     except ValueError as e:
         return error_json(str(e), codigo=404)
 
 
+# ============================================================
+# GALERÍA DE IMÁGENES (se guardan en la base de datos)
+# ============================================================
+@canchas_bp.get("/<int:id_cancha>/imagenes/<int:id_imagen>")
+def servir_imagen(id_cancha, id_imagen):
+    """Entrega los bytes de la foto. Pública: la usa el <img> del navegador."""
+    try:
+        imagen = canchas_service.obtener_imagen(id_cancha, id_imagen)
+        return send_file(
+            BytesIO(imagen.data),
+            mimetype=imagen.mime_type,
+            download_name=imagen.nombre_archivo or "cancha",
+            max_age=3600,
+            conditional=True,
+        )
+    except ValueError as e:
+        return error_json(str(e), codigo=404)
+    except Exception as e:
+        return error_json("No se pudo cargar la imagen.", str(e), 500)
+
+
+@canchas_bp.get("/<int:id_cancha>/imagenes")
+def listar_imagenes(id_cancha):
+    try:
+        imagenes = canchas_service.listar_imagenes(id_cancha)
+        return jsonify([i.to_dict() for i in imagenes]), 200
+    except ValueError as e:
+        return error_json(str(e), codigo=404)
+    except Exception as e:
+        return error_json("No se pudieron listar las imágenes.", str(e), 500)
+
+
+@canchas_bp.post("/<int:id_cancha>/imagenes")
+@require_auth(roles=["administrador"])
+def agregar_imagenes(id_cancha):
+    """Recibe multipart con el campo 'imagenes' (una o varias fotos)."""
+    try:
+        archivos = request.files.getlist("imagenes")
+        imagenes = canchas_service.agregar_imagenes(id_cancha, archivos)
+        return jsonify({
+            "mensaje": f"{len(imagenes)} imagen(es) guardada(s) en la base de datos.",
+            "imagenes": [i.to_dict() for i in imagenes],
+        }), 201
+    except ValueError as e:
+        db.session.rollback()
+        codigo = 404 if "no existe" in str(e).lower() else 400
+        return error_json("No se pudo guardar la imagen.", str(e), codigo)
+    except Exception as e:
+        db.session.rollback()
+        return error_json("Error interno al guardar la imagen.", str(e), 500)
+
+
+@canchas_bp.delete("/<int:id_cancha>/imagenes/<int:id_imagen>")
+@require_auth(roles=["administrador"])
+def eliminar_imagen(id_cancha, id_imagen):
+    try:
+        imagenes = canchas_service.eliminar_imagen(id_cancha, id_imagen)
+        return jsonify({
+            "mensaje": "Imagen eliminada.",
+            "imagenes": [i.to_dict() for i in imagenes],
+        }), 200
+    except ValueError as e:
+        db.session.rollback()
+        codigo = 404 if "no existe" in str(e).lower() else 400
+        return error_json("No se pudo eliminar la imagen.", str(e), codigo)
+    except Exception as e:
+        db.session.rollback()
+        return error_json("Error interno al eliminar la imagen.", str(e), 500)
+
+
+# ============================================================
 @canchas_bp.get("/<int:id_cancha>/disponibilidad")
 def obtener_disponibilidad(id_cancha):
     """Slots libres de una cancha en una fecha, con la duración pedida."""
@@ -111,7 +198,7 @@ def modificar_cancha(id_cancha):
 
         return jsonify({
             "mensaje": "Cancha modificada con éxito.",
-            "cancha": cancha.to_dict(),
+            "cancha": canchas_service.serializar(cancha),
         }), 200
 
     except ValueError as e:
@@ -150,7 +237,7 @@ def eliminar_cancha(id_cancha):
         return error_json(
             "No se puede retirar físicamente la cancha porque tiene reservas o "
             "eventos asociados. Use PATCH /api/canchas/<id>/estado para "
-            "colocarla como fuera_servicio.",
+            "colocarla como inactivo.",
             codigo=409,
         )
 
@@ -179,7 +266,7 @@ def cambiar_estado_cancha(id_cancha):
 
         return jsonify({
             "mensaje": f"Estado actualizado a {cancha.estado}.",
-            "cancha": cancha.to_dict(),
+            "cancha": canchas_service.serializar(cancha),
         }), 200
 
     except ValueError as e:

@@ -22,6 +22,12 @@ TIPOS_TARIFA = ("normal", "nocturna", "fin_semana")
 FIN_DE_SEMANA = (5, 6)
 PRIORIDAD_TIPO = {"fin_semana": 3, "nocturna": 2, "normal": 1}
 
+#: Horario general de la cancha cuando no tiene uno configurado. Sin este
+#: fallback una cancha sin horario_apertura/horario_cierre no tendria ningun
+#: slot reservable y el administrador no podria corregirlo desde la pantalla
+#: de horarios (los campos llegan vacios y deshabilitados).
+HORARIO_GENERAL_POR_DEFECTO = (HORA_APERTURA_UI, HORA_CIERRE_UI)
+
 # Defaults usados por la UI de administracion.
 DEFAULT_FRANJAS = {
     "normal": (time(6, 0), time(18, 0)),
@@ -33,6 +39,19 @@ DEFAULT_FRANJAS = {
 # ============================================================
 # HORARIOS POR DIA
 # ============================================================
+def horario_general(cancha):
+    """(apertura, cierre) de la cancha.
+
+    Si la cancha no tiene horario general propio se usa el horario de
+    atencion por defecto (06:00 a 23:00) para que siempre tenga slots.
+    """
+    if cancha is None:
+        return HORARIO_GENERAL_POR_DEFECTO
+    if cancha.horario_apertura and cancha.horario_cierre:
+        return cancha.horario_apertura, cancha.horario_cierre
+    return HORARIO_GENERAL_POR_DEFECTO
+
+
 def obtener_horario_dia(id_cancha, dia_semana):
     """Horario de una cancha para un dia. None = no opera ese dia.
 
@@ -49,9 +68,7 @@ def obtener_horario_dia(id_cancha, dia_semana):
 
     # Sin configuracion por dia -> horario general de la cancha.
     cancha = db.session.get(Cancha, id_cancha)
-    if not cancha or not cancha.horario_apertura or not cancha.horario_cierre:
-        return None
-    return cancha.horario_apertura, cancha.horario_cierre
+    return horario_general(cancha)
 
 
 def listar_horarios(id_cancha):
@@ -63,31 +80,21 @@ def listar_horarios(id_cancha):
         h.dia_semana: h
         for h in HorarioCancha.query.filter_by(id_cancha=id_cancha).all()
     }
+    apertura_general, cierre_general = horario_general(cancha)
     resultado = []
     for dia in range(7):
         fila = filas.get(dia)
         if fila:
             resultado.append(fila.to_dict())
-        elif cancha.horario_apertura and cancha.horario_cierre:
-            resultado.append({
-                "id_horario": None,
-                "id_cancha": id_cancha,
-                "dia_semana": dia,
-                "dia_nombre": DIAS[dia],
-                "hora_apertura": cancha.horario_apertura.strftime("%H:%M"),
-                "hora_cierre": cancha.horario_cierre.strftime("%H:%M"),
-                "activo": True,
-                "por_defecto": True,
-            })
         else:
             resultado.append({
                 "id_horario": None,
                 "id_cancha": id_cancha,
                 "dia_semana": dia,
                 "dia_nombre": DIAS[dia],
-                "hora_apertura": None,
-                "hora_cierre": None,
-                "activo": False,
+                "hora_apertura": apertura_general.strftime("%H:%M"),
+                "hora_cierre": cierre_general.strftime("%H:%M"),
+                "activo": True,
                 "por_defecto": True,
             })
     return resultado
@@ -146,11 +153,12 @@ def aplicar_horarios(id_cancha, dias, id_usuario=None):
         if not activo:
             # El dia queda cerrado: se necesita una fila inactiva para que
             # obtener_horario_dia() devuelva None y no caiga al horario general.
+            apertura_general, cierre_general = horario_general(cancha)
             if fila is None:
                 db.session.add(HorarioCancha(
                     id_cancha=id_cancha, dia_semana=dia,
-                    hora_apertura=cancha.horario_apertura or HORA_APERTURA_UI,
-                    hora_cierre=cancha.horario_cierre or HORA_CIERRE_UI,
+                    hora_apertura=apertura_general,
+                    hora_cierre=cierre_general,
                     activo=False,
                 ))
             else:

@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import "../App.css";
 import { useAuth } from '../context/AuthContext';
 import { AppLayout } from '../components/layout/AppLayout';
+import { imagenCanchaURL } from '../services/canchasService';
 import {
   DIAS_MAX_ANTICIPACION,
   DIAS_MIN_ANTICIPACION,
@@ -37,6 +39,10 @@ interface Cancha {
   precio_hora: number;
   techada: boolean;
   estado: string;
+  estado_calculado?: string;
+  reserva_habilitada?: boolean;
+  total_imagenes?: number;
+  imagen_preview_id?: number | null;
   ubicacion?: string;
   superficie?: string;
   id_categoria?: number;
@@ -104,6 +110,14 @@ interface Categoria {
 // HELPERS
 // ============================================================
 const DURACIONES_COMUNES = [1, 1.5, 2, 2.5, 3, 4];
+
+/** Etiquetas legibles de los estados de cancha (el backend calcula "ocupada"). */
+const ETIQUETA_ESTADO_CANCHA: Record<string, string> = {
+  disponible: "Disponible",
+  ocupada: "Ocupada",
+  mantenimiento: "Mantenimiento",
+  inactivo: "Inactiva",
+};
 
 /**
  * Reglas que el backend exige en toda reserva, comprobadas antes del POST para
@@ -193,6 +207,12 @@ function ReservasPage() {
   const [metodoPago, setMetodoPago] = useState("efectivo");
   const [metodoReserva, setMetodoReserva] = useState("qr");
   const [modalReserva, setModalReserva] = useState(false);
+
+  // FILTROS DEL CATÁLOGO DE CANCHAS (vista cliente)
+  const [busquedaCancha, setBusquedaCancha] = useState("");
+  const [filtroDeporteCancha, setFiltroDeporteCancha] = useState("");
+  const [filtroEstadoCancha, setFiltroEstadoCancha] = useState("");
+  const [ordenCancha, setOrdenCancha] = useState("nombre_asc");
 
   // EMPLEADO / ADMIN
   const [reservasAdmin, setReservasAdmin] = useState<ReservaAdmin[]>([]);
@@ -925,6 +945,44 @@ function ReservasPage() {
   };
 
   // ============================================================
+  // CATÁLOGO FILTRADO (vista cliente)
+  // ============================================================
+  const canchasVisibles = useMemo(() => {
+    const texto = busquedaCancha.trim().toLowerCase();
+    const lista = canchas.filter((c) => {
+      const estado = c.estado_calculado || c.estado;
+      if (estado === "inactivo") return false; // dadas de baja no se muestran
+      const coincideTexto =
+        !texto ||
+        c.nombre.toLowerCase().includes(texto) ||
+        c.deporte.toLowerCase().includes(texto) ||
+        (c.ubicacion || "").toLowerCase().includes(texto);
+      const coincideDeporte = !filtroDeporteCancha || c.deporte === filtroDeporteCancha;
+      const coincideEstado = !filtroEstadoCancha || estado === filtroEstadoCancha;
+      return coincideTexto && coincideDeporte && coincideEstado;
+    });
+    return [...lista].sort((a, b) => {
+      switch (ordenCancha) {
+        case "nombre_desc":
+          return b.nombre.localeCompare(a.nombre, "es");
+        case "precio_asc":
+          return Number(a.precio_hora) - Number(b.precio_hora);
+        case "precio_desc":
+          return Number(b.precio_hora) - Number(a.precio_hora);
+        case "recientes":
+          return b.id - a.id;
+        default:
+          return a.nombre.localeCompare(b.nombre, "es");
+      }
+    });
+  }, [canchas, busquedaCancha, filtroDeporteCancha, filtroEstadoCancha, ordenCancha]);
+
+  const deportesCanchas = useMemo(
+    () => Array.from(new Set(canchas.map((c) => c.deporte))).sort((a, b) => a.localeCompare(b, "es")),
+    [canchas],
+  );
+
+  // ============================================================
   // RENDER
   // ============================================================
   if (cargando) return <AppLayout title="Reservas"><div className="cargando">Cargando canchas...</div></AppLayout>;
@@ -938,28 +996,90 @@ function ReservasPage() {
       {/* ===================== VISTA: CLIENTE ===================== */}
       {esCliente && (
         <>
-          <h2 className="section-title">Canchas Disponibles</h2>
+          <h2 className="section-title">Canchas</h2>
+
+          {/* BÚSQUEDA Y FILTROS */}
+          <div className="barra-filtros">
+            <div className="campo-busqueda">
+              <span className="lupa">🔍</span>
+              <input
+                type="search"
+                placeholder="Buscar cancha por nombre, deporte o zona…"
+                value={busquedaCancha}
+                onChange={(e) => setBusquedaCancha(e.target.value)}
+              />
+            </div>
+            <select
+              value={filtroDeporteCancha}
+              onChange={(e) => setFiltroDeporteCancha(e.target.value)}
+            >
+              <option value="">Todos los deportes</option>
+              {deportesCanchas.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+            <select
+              value={filtroEstadoCancha}
+              onChange={(e) => setFiltroEstadoCancha(e.target.value)}
+            >
+              <option value="">Todos los estados</option>
+              <option value="disponible">Disponibles</option>
+              <option value="ocupada">Ocupadas</option>
+              <option value="mantenimiento">En mantenimiento</option>
+            </select>
+            <select value={ordenCancha} onChange={(e) => setOrdenCancha(e.target.value)}>
+              <option value="nombre_asc">Nombre A → Z</option>
+              <option value="nombre_desc">Nombre Z → A</option>
+              <option value="precio_asc">Precio: menor a mayor</option>
+              <option value="precio_desc">Precio: mayor a menor</option>
+              <option value="recientes">Más recientes</option>
+            </select>
+          </div>
+
+          {canchasVisibles.length === 0 ? (
+            <div className="estado-vacio">
+              {canchas.length === 0
+                ? "No hay canchas registradas por el momento."
+                : "Ninguna cancha coincide con tu búsqueda o filtros."}
+            </div>
+          ) : (
           <div className="canchas-grid">
-            {canchas.map((c) => {
-              // Buscar si esta cancha tiene un bloqueo activo (mantenimiento, evento, etc.)
+            {canchasVisibles.map((c) => {
+              // Estado que ve el cliente: disponible / ocupada / mantenimiento.
+              const estado = c.estado_calculado || c.estado;
+              // Bloqueo puntual (mantenimiento programado, evento, etc.)
               const bloqueoActivo = bloqueos.find(
                 (b) => b.id_cancha === c.id && b.estado === 'activo'
               );
-              
-              // Determinar si está bloqueada (por estado o por bloqueo activo)
-              const fueraServicio = c.estado === 'fuera_servicio';
-              const enMantenimiento = !!bloqueoActivo;
+              const noReservable = c.reserva_habilitada === false || estado !== 'disponible';
+
+              const etiquetaEstado: Record<string, string> = {
+                disponible: 'DISPONIBLE',
+                ocupada: 'OCUPADA AHORA',
+                mantenimiento: 'EN MANTENIMIENTO',
+              };
 
               return (
-                <div 
-                  key={c.id} 
+                <div
+                  key={c.id}
                   className="cancha-card"
-                  style={{ 
-                    opacity: (fueraServicio || enMantenimiento) ? 0.7 : 1,
-                    borderColor: enMantenimiento ? '#ff9800' : fueraServicio ? '#e63946' : undefined
+                  style={{
+                    opacity: noReservable ? 0.85 : 1,
+                    borderColor:
+                      estado === 'mantenimiento'
+                        ? '#ff9800'
+                        : estado === 'ocupada'
+                          ? '#7c3aed'
+                          : undefined
                   }}
                 >
-                  {c.imagen_url ? (
+                  {c.imagen_preview_id ? (
+                    <img
+                      className="cancha-imagen"
+                      src={imagenCanchaURL(c.id, c.imagen_preview_id)}
+                      alt={c.nombre}
+                    />
+                  ) : c.imagen_url ? (
                     <img className="cancha-imagen" src={c.imagen_url} alt={c.nombre} />
                   ) : (
                     <div className="cancha-imagen cancha-imagen-placeholder">🏟️</div>
@@ -973,9 +1093,9 @@ function ReservasPage() {
                   {c.ubicacion && <p className="deporte">📍 {c.ubicacion}</p>}
                   {c.superficie && <p className="deporte">🏟️ {c.superficie}</p>}
                   <div className="precio">Bs {c.precio_hora} <span>/ hora</span></div>
-                  
-                  {/* Estado con información del bloqueo */}
-                  {enMantenimiento ? (
+
+                  {/* Estado + motivo del bloqueo puntual, si existe */}
+                  {bloqueoActivo ? (
                     <div style={{
                       marginTop: '10px',
                       padding: '10px',
@@ -993,25 +1113,52 @@ function ReservasPage() {
                       <br />
                       <em style={{ fontSize: '0.8rem' }}>Disponible para reservar después del {bloqueoActivo.fecha_fin}</em>
                     </div>
-                  ) : fueraServicio ? (
-                    <span className="badge fuera_servicio">FUERA DE SERVICIO</span>
                   ) : (
                     <>
-                      <span className="badge disponible">DISPONIBLE</span>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        style={{ width: "100%", marginTop: "12px" }}
-                        onClick={() => abrirModalReserva(c.id)}
-                      >
-                        📅 Reservar
-                      </button>
+                      <span className={`badge ${estado}`}>
+                        {etiquetaEstado[estado] || estado.toUpperCase()}
+                      </span>
+                      {estado === 'ocupada' && (
+                        <p className="deporte" style={{ marginTop: '6px' }}>
+                          ⏳ Tiene una reserva en curso ahora mismo; libérese al finalizar.
+                        </p>
+                      )}
+                      {estado === 'mantenimiento' && (
+                        <p className="deporte" style={{ marginTop: '6px' }}>
+                          🛠️ En reparación: no disponible para reservar hasta que vuelva a estar activa.
+                        </p>
+                      )}
+                      {noReservable ? (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ width: "100%", marginTop: "12px" }}
+                          disabled
+                          title={
+                            estado === 'ocupada'
+                              ? 'La cancha está ocupada en este momento'
+                              : 'La cancha no está disponible para reservar'
+                          }
+                        >
+                          {estado === 'ocupada' ? '⛔ Ocupada — no reservable' : '⛔ No reservable'}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          style={{ width: "100%", marginTop: "12px" }}
+                          onClick={() => abrirModalReserva(c.id)}
+                        >
+                          📅 Reservar
+                        </button>
+                      )}
                     </>
                   )}
                 </div>
               );
             })}
           </div>
+          )}
         </>
       )}
 
@@ -1142,9 +1289,14 @@ function ReservasPage() {
           {verGestionCanchas && (
             <div ref={gestionCanchasRef}>
               <hr className="divider" />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px", gap: "10px", flexWrap: "wrap" }}>
                 <h2 className="section-title" style={{ marginBottom: 0 }}>🏟️ Gestión de Canchas</h2>
-                <button className="btn-primary" onClick={() => abrirModalCancha()}>➕ Nueva Cancha</button>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <Link className="btn-secondary btn-sm" to="/admin/canchas" style={{ textDecoration: "none" }}>
+                    ⚙️ Gestión completa (fotos, filtros y estados)
+                  </Link>
+                  <button className="btn-primary" onClick={() => abrirModalCancha()}>➕ Nueva Cancha</button>
+                </div>
               </div>
               <div className="tabla-wrapper">
                 <table>
@@ -1171,7 +1323,7 @@ function ReservasPage() {
                         <td style={{ fontSize: "0.85rem" }}>{c.superficie || "—"}</td>
                         <td>Bs {c.precio_hora}</td>
                         <td>{c.techada ? "✅" : "❌"}</td>
-                        <td><span className={`badge ${c.estado}`}>{c.estado}</span></td>
+                        <td><span className={`badge ${c.estado_calculado || c.estado}`}>{ETIQUETA_ESTADO_CANCHA[c.estado_calculado || c.estado] || c.estado}</span></td>
                         <td>
                           <div className="acciones">
                             <button className="btn-warning btn-sm" onClick={() => abrirModalCancha(c)}>✏️</button>
@@ -1282,13 +1434,13 @@ function ReservasPage() {
           </tr>
         </thead>
         <tbody>
-          {canchas.filter(c => c.estado !== 'disponible').map((c) => (
+          {canchas.filter(c => (c.estado_calculado || c.estado) !== 'disponible').map((c) => (
             <tr key={c.id}>
               <td><strong style={{ color: "var(--color-primary)" }}>#{c.id}</strong></td>
               <td><strong>{c.nombre}</strong></td>
               <td>{c.deporte}</td>
               <td>
-                <span className={`badge ${c.estado}`}>{c.estado}</span>
+                <span className={`badge ${c.estado_calculado || c.estado}`}>{ETIQUETA_ESTADO_CANCHA[c.estado_calculado || c.estado] || c.estado}</span>
               </td>
               <td>
                 <div className="acciones">
@@ -1703,11 +1855,14 @@ function ReservasPage() {
               {canchaEditando && (
                 <div className="form-group">
                   <label>Estado</label>
-                  <select value={canFormEstado} onChange={(e) => setCanFormEstado(e.target.value)}>
+                  <select value={canFormEstado === "ocupada" ? "disponible" : canFormEstado} onChange={(e) => setCanFormEstado(e.target.value)} disabled={canchaEditando.estado_calculado === "ocupada"}>
                     <option value="disponible">Disponible</option>
                     <option value="mantenimiento">Mantenimiento</option>
-                    <option value="fuera_servicio">Fuera de servicio</option>
+                    <option value="inactivo">Inactiva (oculta para clientes)</option>
                   </select>
+                  {canchaEditando.estado_calculado === "ocupada" && (
+                    <small className="hora-hint">🔒 Cancha ocupada ahora (reserva en curso); se libera sola al terminar.</small>
+                  )}
                 </div>
               )}
               {canchaEditando && canFormEstado !== canchaEditando.estado && (

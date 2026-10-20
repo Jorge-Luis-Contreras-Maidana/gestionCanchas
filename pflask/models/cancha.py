@@ -33,6 +33,15 @@ class Cancha(db.Model):
 
     categoria = db.relationship("Categoria", lazy=True)
 
+    # Galería de fotos: se guardan como binario en cancha_imagen y se borran
+    # junto con la cancha (cascade ORM).
+    imagenes = db.relationship(
+        "CanchaImagen",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        order_by="CanchaImagen.orden",
+    )
+
     def to_dict(self):
         nombre_categoria = (
             self.categoria.nombre if self.categoria else None

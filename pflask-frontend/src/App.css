@@ -42,32 +42,47 @@ body {
 /* ============================================
      CONTENEDOR PRINCIPAL
      ============================================ */
-.app-container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 30px 20px 60px;
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
 }
 
-.app-header {
-  text-align: center;
+.sidebar {
+  width: 260px;
+  flex: 0 0 260px;
   background: var(--color-bg-card);
-  padding: 20px 0 30px;
-  border-bottom: 2px solid var(--color-border);
-  margin-bottom: 30px;
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px 18px;
 }
 
-.app-header h1 {
-  font-size: 2.2rem;
-  background: linear-gradient(135deg, var(--color-primary), #0F3F3F);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 8px;
+.main {
+  flex: 1 1 0%;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  padding: 26px 32px 60px;
+  overflow-x: hidden;
 }
 
-.app-header p {
-  color: var(--color-text-dim);
-  font-size: 0.95rem;
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
 }
 
 .section-title {
@@ -207,6 +222,64 @@ body {
   font-size: 0.85rem;
   letter-spacing: 0.5px;
   box-shadow: 0 2px 8px rgba(15, 127, 130, 0.4);
+  vertical-align: middle;
+}
+
+/* Dato secundario de una fila (ubicacion, superficie, avisos). */
+.cancha-dato {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--color-text-dim);
+  margin-top: 3px;
+}
+
+/* Boton cuadrado de solo icono (editar, eliminar, tarifas). */
+.btn-icono {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* Horario general de la cancha (respaldo de los dias sin fila propia). */
+.horario-general {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-elevated);
+}
+
+.horario-general .form-group {
+  margin-bottom: 0;
+  min-width: 160px;
+}
+
+/* Casilla "Abre / Cerrado" de la tabla de horarios por día. */
+.horario-activo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--color-text-dim);
+}
+
+.horario-activo input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
 }
 
 .badge {
@@ -235,6 +308,148 @@ body {
   background: rgba(230, 57, 70, 0.15);
   color: var(--color-danger);
   border: 1px solid rgba(230, 57, 70, 0.4);
+}
+
+/* Cancha con una reserva activa en este mismo momento (estado calculado). */
+.badge.ocupada {
+  background: rgba(124, 58, 237, 0.15);
+  color: #7c3aed;
+  border: 1px solid rgba(124, 58, 237, 0.4);
+}
+
+/* Cancha dada de baja: no aparece en la vista del cliente. */
+.badge.inactivo {
+  background: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+  border: 1px solid rgba(107, 114, 128, 0.4);
+}
+
+/* ============================================
+     GESTIÓN DE CANCHAS: barra de búsqueda y filtros
+     ============================================ */
+.gestion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.barra-filtros {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.barra-filtros select {
+  max-width: 210px;
+}
+
+.campo-busqueda {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+  max-width: 380px;
+}
+
+.campo-busqueda .lupa {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.campo-busqueda input {
+  width: 100%;
+  padding-left: 34px;
+}
+
+/* Pestañas de la pantalla de gestión de canchas. */
+.pestanas-canchas {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.pestanas-canchas .pestana {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-dim);
+  padding: 9px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.pestanas-canchas .pestana.activa {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+/* ============================================
+     GALERÍA DE IMÁGENES DEL MODAL DE CANCHA
+     ============================================ */
+.galeria-mini {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.galeria-mini-item {
+  position: relative;
+}
+
+.galeria-mini-item img {
+  width: 100%;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  display: block;
+}
+
+.galeria-quitar {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(230, 57, 70, 0.9);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.galeria-quitar:hover {
+  background: var(--color-danger);
+}
+
+.galeria-nueva-tag {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: rgba(76, 175, 80, 0.9);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 6px;
 }
 
 .badge.pendiente {
@@ -306,6 +521,18 @@ body {
   border-radius: var(--radius);
   padding: 25px;
   max-width: 500px;
+}
+
+/* Tarjeta de contenido a todo el ancho. .form-card esta limitada a 500px
+   ( Sirve para formularios ), pero las tablas con muchas columnas se
+   cortaban: con .panel-card la tabla usa todo el ancho disponible. */
+.panel-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 25px;
+  width: 100%;
+  margin-bottom: 20px;
 }
 
 .form-group {
@@ -494,6 +721,27 @@ button:disabled {
   border: 1px solid var(--color-border);
   background: var(--color-bg-card);
   margin-bottom: 20px;
+}
+
+/* Columna de acciones fija a la derecha: con tablas anchas (canchas,
+   reservas) los botones de editar/eliminar quedaban fuera de la vista. */
+.tabla-wrapper th.col-acciones,
+.tabla-wrapper td.col-acciones {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--color-bg-card);
+  box-shadow: -10px 0 10px -10px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.tabla-wrapper th.col-acciones {
+  z-index: 3;
+  background: var(--color-bg-elevated);
+}
+
+.tabla-wrapper tbody tr:hover td.col-acciones {
+  background: #f4faf9;
 }
 
 table {

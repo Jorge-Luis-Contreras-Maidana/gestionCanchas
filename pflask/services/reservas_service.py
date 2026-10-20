@@ -27,7 +27,11 @@ from validators.auth_validator import validar_password, validar_ci, validar_celu
 
 HORA_APERTURA = datetime.strptime("06:00", "%H:%M").time()
 HORA_CIERRE = datetime.strptime("23:00", "%H:%M").time()
-ESTADOS_VALIDOS_CANCHA = ("disponible", "mantenimiento", "fuera_servicio")
+#: Estados que el administrador puede elegir en una cancha. "ocupada" se
+#: calcula sola y por eso no figura. El alias fuera_servicio se acepta por
+#: compatibilidad y se guarda como inactivo.
+ESTADOS_VALIDOS_CANCHA = ("disponible", "mantenimiento", "inactivo")
+ESTADOS_ALIAS_CANCHA = {"fuera_servicio": "inactivo", "activo": "disponible"}
 ESTADOS_TERMINALES = ("cancelada", "completada", "expirada")
 ESTADOS_ACTIVOS = ("pendiente", "confirmada")
 MINUTOS_PARA_PAGAR = 15
@@ -1405,6 +1409,9 @@ def admin_crear_cancha(datos, id_usuario=None):
         id_categoria=id_categoria,
         id_administrador=id_administrador,
         imagen_url=(datos.get("imagen_url") or "").strip() or None,
+        # Horario general por defecto: sin el la cancha no tendria slots.
+        horario_apertura=HORA_APERTURA,
+        horario_cierre=HORA_CIERRE,
     )
     db.session.add(nueva)
     db.session.commit()
@@ -1447,8 +1454,14 @@ def admin_editar_cancha(id_cancha, datos, id_usuario=None):
 
     if "estado" in datos:
         estado = str(datos["estado"]).strip().lower()
+        estado = ESTADOS_ALIAS_CANCHA.get(estado, estado)
+        if estado == "ocupada":
+            raise ValueError(
+                "'ocupada' no se asigna a mano: se calcula cuando la cancha "
+                "tiene una reserva activa ahora."
+            )
         if estado not in ESTADOS_VALIDOS_CANCHA:
-            raise ValueError("Estado inválido. Use: disponible, mantenimiento o fuera_servicio.")
+            raise ValueError("Estado inválido. Use: disponible, mantenimiento o inactivo.")
         _registrar_cambio_estado_cancha(cancha, estado, datos.get("motivo"), id_usuario)
         cancha.estado = estado
 
@@ -1467,9 +1480,9 @@ def admin_editar_cancha(id_cancha, datos, id_usuario=None):
     if "imagen_url" in datos:
         cancha.imagen_url = str(datos["imagen_url"]).strip() or None
 
-    if "horario_apertura" in datos:
+    if datos.get("horario_apertura"):
         cancha.horario_apertura = _hora(datos["horario_apertura"], "horario_apertura")
-    if "horario_cierre" in datos:
+    if datos.get("horario_cierre"):
         cancha.horario_cierre = _hora(datos["horario_cierre"], "horario_cierre")
     if "dias_atencion" in datos:
         dias = datos["dias_atencion"]
@@ -1478,6 +1491,10 @@ def admin_editar_cancha(id_cancha, datos, id_usuario=None):
     if cancha.horario_apertura and cancha.horario_cierre:
         if cancha.horario_cierre <= cancha.horario_apertura:
             raise ValueError("El horario de cierre debe ser posterior al de apertura.")
+    else:
+        # Nunca dejar la cancha sin horario general (respaldo de los dias).
+        cancha.horario_apertura = HORA_APERTURA
+        cancha.horario_cierre = HORA_CIERRE
 
     db.session.commit()
     return {"mensaje": "Cancha actualizada", "id_cancha": cancha.id_cancha}
@@ -1492,17 +1509,17 @@ def admin_eliminar_cancha(id_cancha, id_usuario=None):
     eventos = Evento.query.filter_by(id_cancha=id_cancha).count()
 
     # Si tiene reservas (cualquiera) o eventos, NO se borra físicamente:
-    # se sugiere/ejecuta la desactivación (fuera_servicio) con bitácora.
+    # se sugiere/ejecuta la desactivación (inactivo) con bitácora.
     if reservas > 0 or eventos > 0:
         motivo = f"Eliminación rechazada: {reservas} reserva(s) y {eventos} evento(s). Se desactiva."
-        if cancha.estado != "fuera_servicio":
-            _registrar_cambio_estado_cancha(cancha, "fuera_servicio", motivo, id_usuario)
-            cancha.estado = "fuera_servicio"
+        if cancha.estado != "inactivo":
+            _registrar_cambio_estado_cancha(cancha, "inactivo", motivo, id_usuario)
+            cancha.estado = "inactivo"
             db.session.commit()
         return {
             "mensaje": (
                 "La cancha tiene reservas o eventos asociados. No se puede borrar; "
-                "se desactivó (fuera de servicio) para no afectar el historial."
+                "se desactivó (inactiva) para no afectar el historial."
             ),
             "desactivada": True,
         }

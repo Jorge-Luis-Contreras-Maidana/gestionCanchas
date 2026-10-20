@@ -1,10 +1,27 @@
 from decimal import Decimal, InvalidOperation
 
+#: Estados que el administrador puede elegir a mano. "ocupada" NO está porque
+#: se calcula solo: existe una reserva activa en este mismo momento.
 ESTADOS_VALIDOS = {
     "disponible",
     "mantenimiento",
-    "fuera_servicio",
+    "inactivo",
 }
+
+#: Alias aceptados por compatibilidad con datos viejos/formularios antiguos.
+ESTADOS_ALIAS = {
+    "fuera_servicio": "inactivo",
+    "activo": "disponible",
+}
+
+#: El filtro del listado también acepta "ocupada" (estado calculado).
+ESTADOS_FILTRO = ESTADOS_VALIDOS | {"ocupada"}
+
+#: Fotos: límites y formatos reales admitidos (se valida la firma del archivo,
+#: no la extension que mande el navegador).
+MAX_IMAGENES_CANCHA = 8
+MAX_IMAGEN_BYTES = 4 * 1024 * 1024  # 4 MB por imagen
+MIME_IMAGENES = ("image/jpeg", "image/png", "image/webp")
 
 
 def convertir_precio(valor):
@@ -82,13 +99,72 @@ def validar_estado(estado):
         raise ValueError("El estado debe ser un texto válido.")
 
     estado = estado.strip().lower()
+    estado = ESTADOS_ALIAS.get(estado, estado)
+
+    if estado == "ocupada":
+        raise ValueError(
+            "'ocupada' no se puede asignar manualmente: se calcula automáticamente "
+            "cuando la cancha tiene una reserva activa en este momento."
+        )
 
     if estado not in ESTADOS_VALIDOS:
         raise ValueError(
-            "Estado no válido. Use: disponible, mantenimiento o fuera_servicio."
+            "Estado no válido. Use: disponible, mantenimiento o inactivo."
         )
 
     return estado
+
+
+def validar_filtro_estado(estado):
+    """Filtro del listado: además de los estados manuales acepta 'ocupada'."""
+    if not isinstance(estado, str):
+        raise ValueError("El estado debe ser un texto válido.")
+    estado = estado.strip().lower()
+    estado = ESTADOS_ALIAS.get(estado, estado)
+    if estado not in ESTADOS_FILTRO:
+        raise ValueError(
+            "Filtro de estado no válido. Use: disponible, ocupada, "
+            "mantenimiento o inactivo."
+        )
+    return estado
+
+
+# ============================================================
+# IMÁGENES
+# ============================================================
+def _detectar_mime_imagen(primeros_bytes):
+    """Devuelve el MIME real del archivo según su firma binaria."""
+    if primeros_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if primeros_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if primeros_bytes.startswith(b"RIFF") and primeros_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def validar_archivo_imagen(archivo):
+    """Lee y valida una foto subida. Devuelve (bytes, mime, nombre_original)."""
+    if archivo is None or not getattr(archivo, "filename", ""):
+        raise ValueError("Una de las imágenes enviada está vacía.")
+
+    datos = archivo.read()
+    if not datos:
+        raise ValueError(f"El archivo '{archivo.filename}' está vacío.")
+    if len(datos) > MAX_IMAGEN_BYTES:
+        raise ValueError(
+            f"'{archivo.filename}' supera el máximo de "
+            f"{MAX_IMAGEN_BYTES // (1024 * 1024)} MB."
+        )
+
+    mime = _detectar_mime_imagen(datos[:16])
+    if not mime:
+        raise ValueError(
+            f"'{archivo.filename}' no es una imagen válida. "
+            "Formatos admitidos: JPG, PNG o WEBP."
+        )
+
+    return datos, mime, archivo.filename.strip()[:150]
 
 
 def validar_datos_cancha(data, parcial=False):
