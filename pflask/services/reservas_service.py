@@ -283,11 +283,19 @@ def consultar_disponibilidad(id_cancha, fecha_valor, duracion):
         raise ValueError("Cancha no encontrada.")
 
     horario_dia = tarifas_service.obtener_horario_dia(id_cancha, fecha.weekday())
+    dia_nombre = tarifas_service.DIAS[fecha.weekday()]
+
+    # Si el dia esta cerrado la respuesta lo dice, para que el cliente no
+    # se entere del error recien al intentar reservar.
+    mensaje = None
+    if horario_dia is None:
+        mensaje = f"La cancha no abre los {dia_nombre.lower()}."
+
     return {
         "id_cancha": id_cancha,
         "cancha": cancha.nombre_cancha,
         "fecha": str(fecha),
-        "dia_nombre": tarifas_service.DIAS[fecha.weekday()],
+        "dia_nombre": dia_nombre,
         "duracion": float(duracion or 1),
         "horario_cancha": (
             {
@@ -297,6 +305,7 @@ def consultar_disponibilidad(id_cancha, fecha_valor, duracion):
             if horario_dia
             else None
         ),
+        "mensaje": mensaje,
         "precio_hora_base": float(cancha.precio_hora),
         "horarios": listar_slots(id_cancha, fecha, duracion),
     }
@@ -1371,6 +1380,8 @@ def _registrar_cambio_precio_cancha(cancha, nuevo_precio, id_usuario=None):
 
 
 def admin_crear_cancha(datos, id_usuario=None):
+    from services.canchas_service import deporte_de_categoria
+
     nombre = (datos.get("nombre_cancha") or "").strip()
     tipo_deporte = (datos.get("tipo_deporte") or "").strip()
     precio = datos.get("precio_hora")
@@ -1381,8 +1392,8 @@ def admin_crear_cancha(datos, id_usuario=None):
     if precio <= 0:
         raise ValueError("El precio por hora debe ser mayor a 0.")
 
-    if not nombre or not tipo_deporte:
-        raise ValueError("Nombre y tipo de deporte son obligatorios.")
+    if not nombre:
+        raise ValueError("El nombre es obligatorio.")
 
     try:
         id_categoria = int(datos["id_categoria"])
@@ -1392,10 +1403,15 @@ def admin_crear_cancha(datos, id_usuario=None):
         raise ValueError("No se pudo determinar el administrador autenticado.")
     id_administrador = int(id_usuario)
 
-    if not db.session.get(Categoria, id_categoria):
+    categoria = db.session.get(Categoria, id_categoria)
+    if not categoria:
         raise ValueError("Categoría no encontrada.")
     if not db.session.get(Administrador, id_administrador):
         raise ValueError("El administrador indicado no existe.")
+
+    # El deporte lo define la categoría: evita que se cargue una cancha con
+    # "Fútbol" como deporte y "Vóley" como categoría.
+    tipo_deporte = tipo_deporte or deporte_de_categoria(categoria.nombre)
 
     # Estado inicial SIEMPRE DISPONIBLE según la lógica de negocio.
     estado = "disponible"
@@ -1437,7 +1453,6 @@ def admin_editar_cancha(id_cancha, datos, id_usuario=None):
         if not tipo_deporte:
             raise ValueError("El tipo de deporte no puede estar vacío.")
         cancha.tipo_deporte = tipo_deporte
-
     if "precio_hora" in datos:
         precio = float(datos["precio_hora"])
         if precio <= 0:
@@ -1468,10 +1483,16 @@ def admin_editar_cancha(id_cancha, datos, id_usuario=None):
         cancha.estado = estado
 
     if "id_categoria" in datos:
+        from services.canchas_service import deporte_de_categoria
+
         id_categoria = int(datos["id_categoria"])
-        if not db.session.get(Categoria, id_categoria):
+        categoria = db.session.get(Categoria, id_categoria)
+        if not categoria:
             raise ValueError("Categoría no encontrada.")
         cancha.id_categoria = id_categoria
+        # La categoría manda sobre el deporte: si cambia, se recalcula.
+        if not (datos.get("tipo_deporte") or "").strip():
+            cancha.tipo_deporte = deporte_de_categoria(categoria.nombre)
 
     if "id_administrador" in datos:
         id_administrador = int(datos["id_administrador"])

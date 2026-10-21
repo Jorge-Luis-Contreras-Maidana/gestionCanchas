@@ -198,14 +198,18 @@ def validar_datos_cancha(data, parcial=False):
 
     if not parcial or "tipo_deporte" in data:
         deporte = data.get("tipo_deporte")
-        if not isinstance(deporte, str):
-            raise ValueError("tipo_deporte debe ser texto válido.")
-        deporte = deporte.strip()
-        if not deporte:
-            raise ValueError("tipo_deporte es obligatorio.")
-        if len(deporte) > 50:
-            raise ValueError("El tipo de deporte no puede superar 50 caracteres.")
-        resultado["tipo_deporte"] = deporte
+        # El tipo de deporte sale de la categoría (ver canchas_service), asi
+        # que solo es obligatorio cuando no se manda categoría.
+        if deporte is None or (isinstance(deporte, str) and not deporte.strip()):
+            if not data.get("id_categoria"):
+                raise ValueError("tipo_deporte es obligatorio.")
+        else:
+            if not isinstance(deporte, str):
+                raise ValueError("tipo_deporte debe ser texto válido.")
+            deporte = deporte.strip()
+            if len(deporte) > 50:
+                raise ValueError("El tipo de deporte no puede superar 50 caracteres.")
+            resultado["tipo_deporte"] = deporte
 
     if "ubicacion" in data:
         ubicacion = data.get("ubicacion")

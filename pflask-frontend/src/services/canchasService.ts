@@ -43,6 +43,10 @@ export interface Cancha {
   horario_apertura?: string | null;
   horario_cierre?: string | null;
   dias_atencion?: string | null;
+  /** Días de la semana que la cancha NO abre (nombre en español). */
+  dias_cerrados?: string[];
+  /** Días de la semana que la cancha sí abre. */
+  dias_habiles?: string[];
   total_imagenes: number;
   imagen_preview_id: number | null;
 }
@@ -111,7 +115,13 @@ export const canchasService = {
       motivo: motivo || undefined,
     }),
 
-  eliminar: (id: number) => axiosClient.delete<{ mensaje: string }>(`${prefijo}/${id}`),
+  eliminar: (id: number) =>
+    axiosClient.delete<{
+      mensaje: string;
+      desactivada: boolean;
+      reservas?: number;
+      eventos?: number;
+    }>(`${prefijo}/${id}`),
 
   listarImagenes: (id: number) =>
     axiosClient.get<CanchaImagen[]>(`${prefijo}/${id}/imagenes`),

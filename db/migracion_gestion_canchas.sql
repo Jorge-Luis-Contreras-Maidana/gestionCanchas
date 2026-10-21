@@ -365,4 +365,15 @@ CREATE TABLE public.analisis_generado (
     FOREIGN KEY (id_administrador) REFERENCES public.administrador (id_administrador) ON DELETE CASCADE
 );
 
+-- 10) El tipo de deporte sale de la categoría ---------------------------
+-- Se normalizan las canchas que ya estaban cargadas con un deporte y una
+-- categoría que no coincidían (p.ej. "Fútbol" con categoría "Vóley").
+UPDATE public.cancha c
+   SET tipo_deporte = COALESCE(
+           NULLIF(btrim(regexp_replace(cat.nombre, '[0-9]+$', '')), ''),
+           cat.nombre
+       )
+  FROM public.categoria cat
+ WHERE cat.id_categoria = c.id_categoria;
+
 COMMIT;

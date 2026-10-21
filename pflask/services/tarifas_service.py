@@ -52,6 +52,30 @@ def horario_general(cancha):
     return HORARIO_GENERAL_POR_DEFECTO
 
 
+def dias_cerrados_por_cancha(ids_cancha):
+    """Días cerrados (0=lunes) de cada cancha, indexados por id_cancha.
+
+    Solo los días con fila propia inactiva están cerrados: los demás siguen
+    el horario general de la cancha.
+    """
+    ids = [i for i in (ids_cancha or []) if i]
+    if not ids:
+        return {}
+    filas = HorarioCancha.query.filter(
+        HorarioCancha.id_cancha.in_(ids),
+        HorarioCancha.activo.is_(False),
+    ).all()
+    mapa = {}
+    for fila in filas:
+        mapa.setdefault(fila.id_cancha, []).append(fila.dia_semana)
+    return {k: sorted(v) for k, v in mapa.items()}
+
+
+def nombres_dias(dias):
+    """[0, 1, 2] -> ['Lunes', 'Martes', 'Miércoles']"""
+    return [DIAS[d] for d in sorted(dias) if d in DIAS]
+
+
 def obtener_horario_dia(id_cancha, dia_semana):
     """Horario de una cancha para un dia. None = no opera ese dia.
 

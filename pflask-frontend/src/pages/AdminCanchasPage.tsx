@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { AppLayout } from "../components/layout/AppLayout";
 import { api } from "../services/api";
 import {
@@ -20,13 +19,8 @@ import {
 } from "../utils/validaciones";
 import {
   DIAS,
-  ETIQUETA_TIPO,
-  FRANJAS_SUGERIDAS,
   tarifasService,
-  type HistorialTarifa,
   type HorarioDia,
-  type Tarifa,
-  type TipoTarifa,
 } from "../services/tarifasService";
 
 // ============================================================
@@ -54,7 +48,6 @@ const ORDENES: { valor: OrdenCancha; etiqueta: string }[] = [
   { valor: "recientes", etiqueta: "Más recientes" },
 ];
 
-const DEPORTES_SUGERIDOS = ["Fútbol", "Futsal", "Básquet", "Vóley", "Tenis"];
 const SUPERFICIES_SUGERIDAS = ["Sintética", "Césped Natural", "Cemento", "Madera"];
 
 // ============================================================
@@ -62,7 +55,6 @@ const SUPERFICIES_SUGERIDAS = ["Sintética", "Césped Natural", "Cemento", "Made
 // ============================================================
 interface FormCancha {
   nombre_cancha: string;
-  tipo_deporte: string;
   precio_hora: string;
   id_categoria: string;
   ubicacion: string;
@@ -74,7 +66,6 @@ interface FormCancha {
 
 const FORM_VACIO: FormCancha = {
   nombre_cancha: "",
-  tipo_deporte: "",
   precio_hora: "",
   id_categoria: "",
   ubicacion: "",
@@ -89,25 +80,8 @@ interface Categoria {
   nombre: string;
 }
 
-interface FormTarifa {
-  tipo_tarifa: TipoTarifa;
-  dia_semana: string;
-  hora_inicio: string;
-  hora_fin: string;
-  precio_hora: string;
-}
-
-const FORM_TARIFA_VACIO: FormTarifa = {
-  tipo_tarifa: "normal",
-  dia_semana: "",
-  hora_inicio: "06:00",
-  hora_fin: "18:00",
-  precio_hora: "",
-};
-
 // ============================================================
 const AdminCanchasPage = () => {
-  const [pestana, setPestana] = useState<"gestion" | "tarifas">("gestion");
 
   // --- Gestión de canchas ---
   const [canchas, setCanchas] = useState<Cancha[]>([]);
@@ -128,14 +102,9 @@ const AdminCanchasPage = () => {
   const [error, setError] = useState("");
 
   // --- Tarifas y horarios (sección heredada) ---
-  const [tarifaCanchaId, setTarifaCanchaId] = useState<number | null>(null);
-  const [tarifas, setTarifas] = useState<Tarifa[]>([]);
+  const [canchaHorariosId, setCanchaHorariosId] = useState<number | null>(null);
   const [horarios, setHorarios] = useState<HorarioDia[]>([]);
-  const [historial, setHistorial] = useState<HistorialTarifa[]>([]);
   const [borradorHorarios, setBorradorHorarios] = useState<HorarioDia[]>([]);
-  const [formTarifa, setFormTarifa] = useState<FormTarifa>(FORM_TARIFA_VACIO);
-  const [editandoTarifa, setEditandoTarifa] = useState<number | null>(null);
-  const [verHistorial, setVerHistorial] = useState(false);
   const [guardando, setGuardando] = useState(false);
 
   // Horario general de la cancha (respaldo de los días sin fila propia).
@@ -234,9 +203,10 @@ const AdminCanchasPage = () => {
     setImagenesNuevas([]);
     if (cancha) {
       setCanchaEditando(cancha);
+      // La cancha abierta en el modal es la que carga sus horarios.
+      setCanchaHorariosId(cancha.id);
       setForm({
         nombre_cancha: cancha.nombre,
-        tipo_deporte: cancha.deporte,
         precio_hora: String(cancha.precio_hora),
         id_categoria: String(cancha.id_categoria || ""),
         ubicacion: cancha.ubicacion || "",
@@ -299,7 +269,6 @@ const AdminCanchasPage = () => {
     try {
       const datos = {
         nombre_cancha: form.nombre_cancha.trim(),
-        tipo_deporte: form.tipo_deporte.trim(),
         precio_hora: Number(form.precio_hora),
         id_categoria: Number(form.id_categoria),
         ubicacion: form.ubicacion.trim() || null,
@@ -341,14 +310,18 @@ const AdminCanchasPage = () => {
   const handleEliminarCancha = async (cancha: Cancha) => {
     if (
       !window.confirm(
-        `¿Eliminar la cancha "${cancha.nombre}"? Si tiene reservas o eventos solo se desactivará.`,
+        `¿Eliminar la cancha "${cancha.nombre}"? Si tiene reservas o eventos se desactiva en vez de borrarse.`,
       )
     )
       return;
     limpiarAvisos();
     try {
       const { data } = await canchasService.eliminar(cancha.id);
-      setMensaje(data.mensaje || "Cancha eliminada.");
+      setMensaje(
+        data.desactivada
+          ? `${data.mensaje} La cancha ya no aparece para los clientes.`
+          : data.mensaje || "Cancha eliminada.",
+      );
       await cargarCanchas();
     } catch (err) {
       avisarError(err);
@@ -378,152 +351,29 @@ const AdminCanchasPage = () => {
   // ============================================================
   // TARIFAS Y HORARIOS (sección heredada)
   // ============================================================
-  const canchaTarifa = canchas.find((c) => c.id === tarifaCanchaId) || null;
+  const canchaHorarios = canchas.find((c) => c.id === canchaHorariosId) || null;
 
-  const cargarTarifas = useCallback(async (idCancha: number) => {
-    const [t, h, hist] = await Promise.all([
-      tarifasService.listarCancha(idCancha),
-      tarifasService.listarHorarios(idCancha),
-      tarifasService.historial(idCancha),
-    ]);
-    setTarifas(t);
+  const cargarHorarios = useCallback(async (idCancha: number) => {
+    const h = await tarifasService.listarHorarios(idCancha);
     setHorarios(h);
     setBorradorHorarios(h);
-    setHistorial(hist);
   }, []);
 
   useEffect(() => {
-    if (tarifaCanchaId === null) return;
+    if (canchaHorariosId === null) return;
     limpiarAvisos();
-    setEditandoTarifa(null);
-    setFormTarifa(FORM_TARIFA_VACIO);
-    setVerHistorial(false);
-    cargarTarifas(tarifaCanchaId).catch((e) => setError(e.message));
-  }, [tarifaCanchaId, cargarTarifas]);
+    cargarHorarios(canchaHorariosId).catch((e) => setError(e.message));
+  }, [canchaHorariosId, cargarHorarios]);
 
   // El horario general se sincroniza con la cancha seleccionada: es el
   // respaldo de los días que no tienen fila propia.
   useEffect(() => {
-    if (!canchaTarifa) return;
+    if (!canchaHorarios) return;
     setHorarioGeneral({
-      apertura: canchaTarifa.horario_apertura || HORA_ATENCION_MIN,
-      cierre: canchaTarifa.horario_cierre || HORA_ATENCION_MAX,
+      apertura: canchaHorarios.horario_apertura || HORA_ATENCION_MIN,
+      cierre: canchaHorarios.horario_cierre || HORA_ATENCION_MAX,
     });
-  }, [canchaTarifa]);
-
-  const aplicarFranjaSugerida = (tipo: TipoTarifa) => {
-    const [ini, fin] = FRANJAS_SUGERIDAS[tipo];
-    setFormTarifa((f) => ({ ...f, tipo_tarifa: tipo, hora_inicio: ini, hora_fin: fin }));
-  };
-
-  const guardarTarifa = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (tarifaCanchaId === null) return;
-    limpiarAvisos();
-
-    if (!horaFinPosterior(formTarifa.hora_inicio, formTarifa.hora_fin)) {
-      setError("La hora de fin debe ser posterior a la hora de inicio.");
-      return;
-    }
-    if (!esNumeroValido(formTarifa.precio_hora, { min: 0.01, max: PRECIO_HORA_MAX })) {
-      setError(`El precio por hora debe ser un número entre 0.01 y ${PRECIO_HORA_MAX}.`);
-      return;
-    }
-    if (formTarifa.tipo_tarifa === "fin_semana" && formTarifa.dia_semana !== "") {
-      const dia = Number(formTarifa.dia_semana);
-      if (dia !== 5 && dia !== 6) {
-        setError("Una tarifa de fin de semana solo aplica a sábado o domingo.");
-        return;
-      }
-    }
-
-    setGuardando(true);
-    try {
-      const datos = {
-        id_cancha: tarifaCanchaId,
-        tipo_tarifa: formTarifa.tipo_tarifa,
-        dia_semana: formTarifa.dia_semana === "" ? null : Number(formTarifa.dia_semana),
-        hora_inicio: formTarifa.hora_inicio,
-        hora_fin: formTarifa.hora_fin,
-        precio_hora: Number(formTarifa.precio_hora),
-      };
-      if (editandoTarifa !== null) {
-        await tarifasService.actualizar(editandoTarifa, datos);
-        setMensaje("Tarifa actualizada.");
-      } else {
-        await tarifasService.crear(datos);
-        setMensaje("Tarifa creada.");
-      }
-      setEditandoTarifa(null);
-      setFormTarifa(FORM_TARIFA_VACIO);
-      await cargarTarifas(tarifaCanchaId);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setGuardando(false);
-    }
-  };
-
-  const editarTarifa = (t: Tarifa) => {
-    setEditandoTarifa(t.id_tarifa);
-    setVerHistorial(false);
-    setFormTarifa({
-      tipo_tarifa: t.tipo_tarifa,
-      dia_semana: t.dia_semana === null ? "" : String(t.dia_semana),
-      hora_inicio: t.hora_inicio,
-      hora_fin: t.hora_fin,
-      precio_hora: String(t.precio_hora),
-    });
-  };
-
-  const alternarTarifaActiva = async (t: Tarifa) => {
-    if (tarifaCanchaId === null) return;
-    limpiarAvisos();
-    try {
-      await tarifasService.actualizar(t.id_tarifa, { activo: !t.activo });
-      setMensaje(t.activo ? "Tarifa desactivada." : "Tarifa activada.");
-      await cargarTarifas(tarifaCanchaId);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const eliminarTarifa = async (t: Tarifa) => {
-    if (
-      !window.confirm(
-        `¿Eliminar la tarifa ${ETIQUETA_TIPO[t.tipo_tarifa]} ${t.hora_inicio}-${t.hora_fin}?`,
-      )
-    )
-      return;
-    if (tarifaCanchaId === null) return;
-    limpiarAvisos();
-    try {
-      await tarifasService.eliminar(t.id_tarifa);
-      setMensaje("Tarifa eliminada.");
-      if (editandoTarifa === t.id_tarifa) {
-        setEditandoTarifa(null);
-        setFormTarifa(FORM_TARIFA_VACIO);
-      }
-      await cargarTarifas(tarifaCanchaId);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const eliminarTodasTarifas = async () => {
-    if (!window.confirm("Se eliminarán TODAS las tarifas de esta cancha. ¿Continuar?")) return;
-    if (tarifaCanchaId === null) return;
-    limpiarAvisos();
-    try {
-      await tarifasService.eliminarTodas(tarifaCanchaId);
-      setMensaje("Todas las tarifas fueron eliminadas.");
-      setEditandoTarifa(null);
-      setFormTarifa(FORM_TARIFA_VACIO);
-      await cargarTarifas(tarifaCanchaId);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
+  }, [canchaHorarios]);
 
   const editarBorrador = (dia: number, campo: "hora_apertura" | "hora_cierre", valor: string) => {
     setBorradorHorarios((prev) =>
@@ -538,7 +388,7 @@ const AdminCanchasPage = () => {
   };
 
   const guardarHorarios = async () => {
-    if (tarifaCanchaId === null) return;
+    if (canchaHorariosId === null) return;
     limpiarAvisos();
 
     for (const h of borradorHorarios) {
@@ -569,7 +419,7 @@ const AdminCanchasPage = () => {
         hora_cierre: h.hora_cierre,
         activo: h.activo,
       }));
-      const nuevos = await tarifasService.guardarHorarios(tarifaCanchaId, datos);
+      const nuevos = await tarifasService.guardarHorarios(canchaHorariosId, datos);
       setHorarios(nuevos);
       setBorradorHorarios(nuevos);
       setMensaje("Horarios guardados.");
@@ -590,7 +440,7 @@ const AdminCanchasPage = () => {
    * "por defecto" de la tabla muestran estos valores.
    */
   const guardarHorarioGeneral = async () => {
-    if (!canchaTarifa) return;
+    if (!canchaHorarios) return;
     limpiarAvisos();
 
     if (!horaFinPosterior(horarioGeneral.apertura, horarioGeneral.cierre)) {
@@ -600,12 +450,12 @@ const AdminCanchasPage = () => {
 
     setGuardandoHorarioGeneral(true);
     try {
-      await canchasService.editar(canchaTarifa.id, {
+      await canchasService.editar(canchaHorarios.id, {
         horario_apertura: horarioGeneral.apertura,
         horario_cierre: horarioGeneral.cierre,
       });
       setMensaje("Horario general guardado.");
-      await Promise.all([cargarCanchas(), cargarTarifas(canchaTarifa.id)]);
+      await Promise.all([cargarCanchas(), cargarHorarios(canchaHorarios.id)]);
     } catch (err) {
       avisarError(err);
     } finally {
@@ -619,31 +469,13 @@ const AdminCanchasPage = () => {
   return (
     <AppLayout
       title="Gestión de canchas"
-      subtitle="Crea canchas con fotos, cambia su estado y configura tarifas"
+      subtitle="Crea canchas con fotos, cambia su estado y define sus horarios"
     >
       {error && <div className="mensaje error">{error}</div>}
       {mensaje && <div className="mensaje success">{mensaje}</div>}
 
-      {/* PESTAÑAS */}
-      <div className="pestanas-canchas">
-        <button
-          type="button"
-          className={pestana === "gestion" ? "pestana activa" : "pestana"}
-          onClick={() => setPestana("gestion")}
-        >
-          🏟️ Canchas
-        </button>
-        <button
-          type="button"
-          className={pestana === "tarifas" ? "pestana activa" : "pestana"}
-          onClick={() => setPestana("tarifas")}
-        >
-          💰 Tarifas y horarios
-        </button>
-      </div>
 
-      {pestana === "gestion" && (
-        <div className="panel-card">
+      <div className="panel-card">
           <div className="gestion-header">
             <div className="section-title" style={{ marginBottom: 0 }}>
               Canchas ({canchasFiltradas.length}
@@ -779,17 +611,6 @@ const AdminCanchasPage = () => {
                               ✏️
                             </button>
                             <button
-                              className="btn-secondary btn-sm btn-icono"
-                              title="Tarifas y horarios"
-                              aria-label={`Tarifas y horarios de ${c.nombre}`}
-                              onClick={() => {
-                                setTarifaCanchaId(c.id);
-                                setPestana("tarifas");
-                              }}
-                            >
-                              💰
-                            </button>
-                            <button
                               className="btn-danger btn-sm btn-icono"
                               title="Eliminar cancha"
                               aria-label={`Eliminar ${c.nombre}`}
@@ -806,417 +627,7 @@ const AdminCanchasPage = () => {
               </table>
             </div>
           )}
-        </div>
-      )}
-
-      {pestana === "tarifas" && (
-        <>
-          <div className="panel-card">
-            <div className="section-title">1. Elige la cancha</div>
-            {canchas.length === 0 ? (
-              <p className="estado-vacio">
-                No hay canchas registradas. Créalas en la pestaña «Canchas».
-              </p>
-            ) : (
-              <div className="form-group">
-                <select
-                  value={tarifaCanchaId ?? ""}
-                  onChange={(e) =>
-                    setTarifaCanchaId(e.target.value === "" ? null : Number(e.target.value))
-                  }
-                >
-                  <option value="">— Selecciona una cancha —</option>
-                  {canchas.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      #{c.id} {c.nombre} ({c.deporte}) — Bs {c.precio_hora}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          {canchaTarifa && (
-            <>
-              <div className="panel-card">
-                <div className="section-title">
-                  2. Horarios por día —{" "}
-                  <Link to="/admin/canchas">{canchaTarifa.nombre}</Link>
-                </div>
-                <p className="hora-hint">
-                  Si un día está desactivado la cancha no abre ese día. Un día sin
-                  configuración propia usa el horario general de la cancha.
-                </p>
-
-                {/* HORARIO GENERAL: es el respaldo de los días que no tienen fila propia */}
-                <div className="horario-general">
-                  <div className="form-group">
-                    <label>Apertura general</label>
-                    <input
-                      type="time"
-                      min={HORA_ATENCION_MIN}
-                      max={HORA_ATENCION_MAX}
-                      value={horarioGeneral.apertura}
-                      onChange={(e) =>
-                        setHorarioGeneral({ ...horarioGeneral, apertura: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Cierre general</label>
-                    <input
-                      type="time"
-                      min={horarioGeneral.apertura || HORA_ATENCION_MIN}
-                      max={HORA_ATENCION_MAX}
-                      value={horarioGeneral.cierre}
-                      onChange={(e) =>
-                        setHorarioGeneral({ ...horarioGeneral, cierre: e.target.value })
-                      }
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={guardarHorarioGeneral}
-                    disabled={guardandoHorarioGeneral}
-                  >
-                    {guardandoHorarioGeneral ? "Guardando…" : "💾 Guardar horario general"}
-                  </button>
-                </div>
-
-                <div className="tabla-wrapper">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Día</th>
-                        <th>Apertura</th>
-                        <th>Cierre</th>
-                        <th>Abre</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {borradorHorarios.map((h) => (
-                        <tr key={h.dia_semana}>
-                          <td>
-                            <strong>{h.dia_nombre}</strong>
-                            {h.por_defecto && (
-                              <span className="cancha-dato">usa el horario general</span>
-                            )}
-                          </td>
-                          <td>
-                            <input
-                              type="time"
-                              min={HORA_ATENCION_MIN}
-                              max={HORA_ATENCION_MAX}
-                              value={h.hora_apertura || HORA_ATENCION_MIN}
-                              onChange={(e) =>
-                                editarBorrador(h.dia_semana, "hora_apertura", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="time"
-                              min={h.hora_apertura || HORA_ATENCION_MIN}
-                              max={HORA_ATENCION_MAX}
-                              value={h.hora_cierre || HORA_ATENCION_MAX}
-                              onChange={(e) =>
-                                editarBorrador(h.dia_semana, "hora_cierre", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <label className="horario-activo">
-                              <input
-                                type="checkbox"
-                                checked={h.activo}
-                                onChange={() => alternarDia(h.dia_semana)}
-                              />{" "}
-                              {h.activo ? "Sí" : "Cerrado"}
-                            </label>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="acciones">
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={guardarHorarios}
-                    disabled={!hayCambiosHorarios || guardando}
-                  >
-                    {hayCambiosHorarios ? "Guardar horarios" : "Sin cambios"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setBorradorHorarios(horarios)}
-                    disabled={!hayCambiosHorarios || guardando}
-                  >
-                    Descartar cambios
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel-card">
-                <div className="section-title">3. Tarifas por franja</div>
-                <p className="hora-hint">
-                  Prioridad: <strong>fin de semana</strong> &gt; <strong>nocturna</strong> &gt;{" "}
-                  <strong>normal</strong>. Si no defines tarifas se usa el precio base (Bs{" "}
-                  {canchaTarifa.precio_hora}). El monto se prorratea por hora al reservar y queda
-                  congelado en la reserva.
-                </p>
-
-                <div className="form-row">
-                  <button
-                    className="btn-secondary"
-                    onClick={() => aplicarFranjaSugerida("normal")}
-                    type="button"
-                  >
-                    Sugerir normal 06-18
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => aplicarFranjaSugerida("nocturna")}
-                    type="button"
-                  >
-                    Sugerir nocturna 18-23
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => aplicarFranjaSugerida("fin_semana")}
-                    type="button"
-                  >
-                    Sugerir fin de semana 06-23
-                  </button>
-                </div>
-
-                {tarifas.length === 0 ? (
-                  <p className="estado-vacio">
-                    Esta cancha no tiene tarifas: se cobra Bs {canchaTarifa.precio_hora} por hora.
-                  </p>
-                ) : (
-                  <div className="tabla-wrapper">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Tipo</th>
-                          <th>Día</th>
-                          <th>Franja</th>
-                          <th>Precio/hora</th>
-                          <th>Estado</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tarifas.map((t) => (
-                          <tr key={t.id_tarifa}>
-                            <td>{ETIQUETA_TIPO[t.tipo_tarifa]}</td>
-                            <td>{t.dia_nombre}</td>
-                            <td>
-                              {t.hora_inicio} – {t.hora_fin}
-                            </td>
-                            <td>Bs {t.precio_hora}</td>
-                            <td>
-                              <span
-                                className={`badge ${t.activo ? "disponible" : "fuera_servicio"}`}
-                              >
-                                {t.activo ? "Activa" : "Inactiva"}
-                              </span>
-                            </td>
-                            <td className="acciones">
-                              <button
-                                className="btn-secondary btn-sm"
-                                onClick={() => editarTarifa(t)}
-                              >
-                                Editar
-                              </button>
-                              <button
-                                className="btn-warning btn-sm"
-                                onClick={() => alternarTarifaActiva(t)}
-                              >
-                                {t.activo ? "Desactivar" : "Activar"}
-                              </button>
-                              <button
-                                className="btn-danger btn-sm"
-                                onClick={() => eliminarTarifa(t)}
-                              >
-                                Eliminar
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                <div className="acciones">
-                  <button className="btn-danger btn-sm" onClick={eliminarTodasTarifas}>
-                    Eliminar todas
-                  </button>
-                  <button
-                    className="btn-secondary btn-sm"
-                    onClick={() => setVerHistorial((v) => !v)}
-                  >
-                    {verHistorial ? "Ocultar historial" : "Ver historial de cambios"}
-                  </button>
-                </div>
-
-                {verHistorial && (
-                  <div className="tabla-wrapper">
-                    {historial.length === 0 ? (
-                      <p className="estado-vacio">Sin cambios registrados.</p>
-                    ) : (
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Fecha</th>
-                            <th>Tipo</th>
-                            <th>Día</th>
-                            <th>Precio</th>
-                            <th>Motivo</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {historial.map((h) => (
-                            <tr key={h.id_historial}>
-                              <td>{new Date(h.fecha).toLocaleString("es-BO")}</td>
-                              <td>
-                                {h.accion} —{" "}
-                                {h.tipo_anterior
-                                  ? ETIQUETA_TIPO[h.tipo_anterior as TipoTarifa]
-                                  : "—"}{" "}
-                                →{" "}
-                                {h.tipo_nuevo
-                                  ? ETIQUETA_TIPO[h.tipo_nuevo as TipoTarifa]
-                                  : "eliminado"}
-                              </td>
-                              <td>
-                                {h.dia_anterior_nombre ?? "Todos"} →{" "}
-                                {h.dia_nuevo_nombre ?? "Todos"}
-                              </td>
-                              <td>{h.precio_anterior ?? "—"} → {h.precio_nuevo ?? "—"}</td>
-                              <td>{h.motivo || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
-
-                <div className="divider" />
-
-                <div className="section-title">
-                  {editandoTarifa !== null ? "Editar tarifa" : "Nueva tarifa"}
-                </div>
-                <form onSubmit={guardarTarifa}>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>Tipo</label>
-                      <select
-                        value={formTarifa.tipo_tarifa}
-                        onChange={(e) =>
-                          setFormTarifa({
-                            ...formTarifa,
-                            tipo_tarifa: e.target.value as TipoTarifa,
-                          })
-                        }
-                      >
-                        <option value="normal">Normal</option>
-                        <option value="nocturna">Nocturna</option>
-                        <option value="fin_semana">Fin de semana</option>
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label>Día</label>
-                      <select
-                        value={formTarifa.dia_semana}
-                        onChange={(e) =>
-                          setFormTarifa({ ...formTarifa, dia_semana: e.target.value })
-                        }
-                      >
-                        <option value="">Todos los días</option>
-                        {DIAS.map((d, i) => (
-                          <option key={d} value={i}>
-                            {d}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>Hora inicio</label>
-                      <input
-                        type="time"
-                        min="06:00"
-                        max="23:00"
-                        required
-                        value={formTarifa.hora_inicio}
-                        onChange={(e) =>
-                          setFormTarifa({ ...formTarifa, hora_inicio: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Hora fin</label>
-                      <input
-                        type="time"
-                        min="06:00"
-                        max="23:00"
-                        required
-                        value={formTarifa.hora_fin}
-                        onChange={(e) => setFormTarifa({ ...formTarifa, hora_fin: e.target.value })}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Precio por hora (Bs)</label>
-                      <input
-                        type="number"
-                        min="0.01"
-                        max={PRECIO_HORA_MAX}
-                        step="0.01"
-                        required
-                        value={formTarifa.precio_hora}
-                        placeholder={String(canchaTarifa.precio_hora)}
-                        onChange={(e) =>
-                          setFormTarifa({ ...formTarifa, precio_hora: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                  {formTarifa.tipo_tarifa === "fin_semana" && formTarifa.dia_semana !== "" && (
-                    <div className="mensaje info">
-                      El fin de semana solo aplica a sábado y domingo.
-                    </div>
-                  )}
-                  <div className="acciones">
-                    <button type="submit" className="btn-primary" disabled={guardando}>
-                      {editandoTarifa !== null ? "Guardar cambios" : "Crear tarifa"}
-                    </button>
-                    {editandoTarifa !== null && (
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => {
-                          setEditandoTarifa(null);
-                          setFormTarifa(FORM_TARIFA_VACIO);
-                        }}
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                </form>
-              </div>
-            </>
-          )}
-        </>
-      )}
+      </div>
 
       {/* ============================================================
           MODAL: CREAR / EDITAR CANCHA
@@ -1233,6 +644,12 @@ const AdminCanchasPage = () => {
                 ? `✏️ Editar cancha #${canchaEditando.id}`
                 : "➕ Nueva cancha"}
             </h3>
+
+            {/* Los avisos se repiten dentro del modal: si no, el mensaje
+                queda tapado por la ventana mientras se edita. */}
+            {error && <div className="mensaje error">{error}</div>}
+            {mensaje && <div className="mensaje success">{mensaje}</div>}
+
             <form onSubmit={handleGuardarCancha}>
               <div className="form-group">
                 <label>Nombre *</label>
@@ -1247,30 +664,26 @@ const AdminCanchasPage = () => {
                 />
               </div>
 
-              <div className="form-group">
-                <label>Tipo de deporte *</label>
-                <input
-                  type="text"
-                  value={form.tipo_deporte}
-                  onChange={(e) => setForm({ ...form, tipo_deporte: e.target.value })}
-                  required
-                  minLength={2}
-                  maxLength={50}
-                />
-                <div className="quick-selects">
-                  {DEPORTES_SUGERIDOS.map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setForm({ ...form, tipo_deporte: d })}
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               <div className="form-row">
+                <div className="form-group">
+                  <label>Deporte / Categoría *</label>
+                  <select
+                    value={form.id_categoria}
+                    onChange={(e) => setForm({ ...form, id_categoria: e.target.value })}
+                    required
+                  >
+                    <option value="">Seleccione el deporte</option>
+                    {categorias.map((cat) => (
+                      <option key={cat.id_categoria} value={cat.id_categoria}>
+                        {cat.nombre}
+                      </option>
+                    ))}
+                  </select>
+                  <small className="hora-hint">
+                    El tipo de deporte se toma de la categoría: así no puede quedar
+                    una cancha con deporte y categoría que no coinciden.
+                  </small>
+                </div>
                 <div className="form-group">
                   <label>Precio por hora (Bs) *</label>
                   <input
@@ -1282,21 +695,6 @@ const AdminCanchasPage = () => {
                     onChange={(e) => setForm({ ...form, precio_hora: e.target.value })}
                     required
                   />
-                </div>
-                <div className="form-group">
-                  <label>Categoría *</label>
-                  <select
-                    value={form.id_categoria}
-                    onChange={(e) => setForm({ ...form, id_categoria: e.target.value })}
-                    required
-                  >
-                    <option value="">Seleccione una categoría</option>
-                    {categorias.map((cat) => (
-                      <option key={cat.id_categoria} value={cat.id_categoria}>
-                        {cat.nombre}
-                      </option>
-                    ))}
-                  </select>
                 </div>
               </div>
 
@@ -1443,6 +841,130 @@ const AdminCanchasPage = () => {
                   disabled={imagenesActuales.length + imagenesNuevas.length >= 8}
                 />
               </div>
+
+              {canchaEditando && (
+                <>
+                  <details className="modal-seccion" open>
+                    <summary>🕐 Horarios por día</summary>
+                    <p className="hora-hint">
+                      Si un día está desactivado la cancha no abre ese día. Un día sin
+                      configuración propia usa el horario general de la cancha.
+                    </p>
+
+                    {/* HORARIO GENERAL: es el respaldo de los días que no tienen fila propia */}
+                    <div className="horario-general">
+                      <div className="form-group">
+                        <label>Apertura general</label>
+                        <input
+                          type="time"
+                          min={HORA_ATENCION_MIN}
+                          max={HORA_ATENCION_MAX}
+                          value={horarioGeneral.apertura}
+                          onChange={(e) =>
+                            setHorarioGeneral({ ...horarioGeneral, apertura: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Cierre general</label>
+                        <input
+                          type="time"
+                          min={horarioGeneral.apertura || HORA_ATENCION_MIN}
+                          max={HORA_ATENCION_MAX}
+                          value={horarioGeneral.cierre}
+                          onChange={(e) =>
+                            setHorarioGeneral({ ...horarioGeneral, cierre: e.target.value })
+                          }
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={guardarHorarioGeneral}
+                        disabled={guardandoHorarioGeneral}
+                      >
+                        {guardandoHorarioGeneral ? "Guardando…" : "💾 Guardar horario general"}
+                      </button>
+                    </div>
+
+                    <div className="tabla-wrapper">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Día</th>
+                            <th>Apertura</th>
+                            <th>Cierre</th>
+                            <th>Abre</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {borradorHorarios.map((h) => (
+                            <tr key={h.dia_semana}>
+                              <td>
+                                <strong>{h.dia_nombre}</strong>
+                                {h.por_defecto && (
+                                  <span className="cancha-dato">usa el horario general</span>
+                                )}
+                              </td>
+                              <td>
+                                <input
+                                  type="time"
+                                  min={HORA_ATENCION_MIN}
+                                  max={HORA_ATENCION_MAX}
+                                  value={h.hora_apertura || HORA_ATENCION_MIN}
+                                  onChange={(e) =>
+                                    editarBorrador(h.dia_semana, "hora_apertura", e.target.value)
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="time"
+                                  min={h.hora_apertura || HORA_ATENCION_MIN}
+                                  max={HORA_ATENCION_MAX}
+                                  value={h.hora_cierre || HORA_ATENCION_MAX}
+                                  onChange={(e) =>
+                                    editarBorrador(h.dia_semana, "hora_cierre", e.target.value)
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <label className="horario-activo">
+                                  <input
+                                    type="checkbox"
+                                    checked={h.activo}
+                                    onChange={() => alternarDia(h.dia_semana)}
+                                  />{" "}
+                                  {h.activo ? "Sí" : "Cerrado"}
+                                </label>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="acciones">
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={guardarHorarios}
+                        disabled={!hayCambiosHorarios || guardando}
+                      >
+                        {hayCambiosHorarios ? "Guardar horarios" : "Sin cambios"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setBorradorHorarios(horarios)}
+                        disabled={!hayCambiosHorarios || guardando}
+                      >
+                        Descartar cambios
+                      </button>
+                    </div>
+                  </details>
+
+                </>
+              )}
 
               <div className="modal-actions">
                 <button type="submit" className="btn-success" disabled={guardandoCancha}>

@@ -265,6 +265,45 @@ body {
   min-width: 160px;
 }
 
+/* Secciones plegables dentro del modal de cancha (horarios, tarifas). */
+.modal-seccion {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-elevated);
+  margin-top: 18px;
+}
+
+.modal-seccion > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-text);
+  padding: 12px 14px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-seccion > summary::-webkit-details-marker {
+  display: none;
+}
+
+.modal-seccion > summary::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--color-text-dim);
+  transition: transform 0.2s;
+}
+
+.modal-seccion[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.modal-seccion > *:not(summary) {
+  padding: 0 14px 14px;
+}
+
 /* Casilla "Abre / Cerrado" de la tabla de horarios por día. */
 .horario-activo {
   display: inline-flex;

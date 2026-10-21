@@ -51,6 +51,8 @@ interface Cancha {
   horario_apertura?: string | null;
   horario_cierre?: string | null;
   dias_atencion?: string | null;
+  dias_cerrados?: string[];
+  dias_habiles?: string[];
 }
 
 interface Reserva {
@@ -118,6 +120,35 @@ const ETIQUETA_ESTADO_CANCHA: Record<string, string> = {
   mantenimiento: "Mantenimiento",
   inactivo: "Inactiva",
 };
+
+const DIAS_SEMANA = [
+  "Lunes",
+  "Martes",
+  "Miércoles",
+  "Jueves",
+  "Viernes",
+  "Sábado",
+  "Domingo",
+];
+
+/**
+ * Resumen corto de los días de atención de la cancha, para que el cliente
+ * sepa de antemano si abre ese día.
+ */
+function resumenDias(c: Cancha): string {
+  const cerrados = c.dias_cerrados || [];
+  const abiertos = c.dias_habiles || [];
+  if (cerrados.length === 0) return "Atiende todos los días";
+  if (abiertos.length === 0) return "No tiene días de atención";
+  if (cerrados.length === 1) return `Cierra los ${cerrados[0].toLowerCase()}`;
+
+  const ini = DIAS_SEMANA.indexOf(abiertos[0]);
+  const fin = DIAS_SEMANA.indexOf(abiertos[abiertos.length - 1]);
+  if (fin - ini + 1 === abiertos.length) {
+    return `Atiende de ${abiertos[0].toLowerCase()} a ${abiertos[abiertos.length - 1].toLowerCase()}`;
+  }
+  return `Atiende ${abiertos.map((d) => d.toLowerCase()).join(", ")}`;
+}
 
 /**
  * Reglas que el backend exige en toda reserva, comprobadas antes del POST para
@@ -189,6 +220,8 @@ function ReservasPage() {
   const [canchas, setCanchas] = useState<Cancha[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [slots, setSlots] = useState<SlotHorario[]>([]);
+  /** Aviso cuando la cancha no abre el día elegido. */
+  const [avisoCerrado, setAvisoCerrado] = useState<string | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
 
@@ -276,7 +309,6 @@ function ReservasPage() {
   const [modalCancha, setModalCancha] = useState(false);
   const [canchaEditando, setCanchaEditando] = useState<Cancha | null>(null);
   const [canFormNombre, setCanFormNombre] = useState("");
-  const [canFormDeporte, setCanFormDeporte] = useState("");
   const [canFormPrecio, setCanFormPrecio] = useState("");
   const [canFormTechada, setCanFormTechada] = useState(false);
   const [canFormUbicacion, setCanFormUbicacion] = useState("");
@@ -379,15 +411,24 @@ function ReservasPage() {
   ) => {
     if (!idCancha || !fecha || !duracion) {
       setSlots([]);
+      setAvisoCerrado(null);
       return;
     }
     axios
-      .get<{ horarios: SlotHorario[] }>(
+      .get<{ horarios: SlotHorario[]; mensaje: string | null }>(
         `http://127.0.0.1:5000/api/canchas/${idCancha}/disponibilidad` +
           `?fecha=${fecha}&duracion=${duracion}`
       )
-      .then((res) => setSlots(res.data.horarios || []))
-      .catch(() => setSlots([]));
+      .then((res) => {
+        setSlots(res.data.horarios || []);
+        // Si el backend dice que la cancha no abre ese día, se avisa al
+        // cliente en vez de dejarlo descubrirlo al reservar.
+        setAvisoCerrado(res.data.mensaje || null);
+      })
+      .catch(() => {
+        setSlots([]);
+        setAvisoCerrado(null);
+      });
   };
 
   useEffect(() => {
@@ -451,6 +492,12 @@ function ReservasPage() {
   const handleReserva = async (e: any) => {
   e.preventDefault();
   if (!usuario || !usuario.id_cliente) return;
+
+  // La cancha no abre el día elegido: se avisa antes de mandar nada.
+  if (avisoCerrado) {
+    setMensajeReserva({ texto: `❌ ${avisoCerrado} Elige otra fecha.`, tipo: "error" });
+    return;
+  }
 
   const falla = validaReserva({ fecha, hora, duracion });
   if (falla) {
@@ -814,7 +861,6 @@ function ReservasPage() {
     if (cancha) {
       setCanchaEditando(cancha);
       setCanFormNombre(cancha.nombre);
-      setCanFormDeporte(cancha.deporte);
       setCanFormPrecio(String(cancha.precio_hora));
       setCanFormTechada(cancha.techada);
       setCanFormUbicacion(cancha.ubicacion || "");
@@ -832,7 +878,6 @@ function ReservasPage() {
     } else {
       setCanchaEditando(null);
       setCanFormNombre("");
-      setCanFormDeporte("Fútbol");
       setCanFormPrecio("");
       setCanFormTechada(false);
       setCanFormUbicacion("");
@@ -875,7 +920,6 @@ function ReservasPage() {
     setCanMensaje({ texto: "Guardando...", tipo: "info" });
     const datos = {
       nombre_cancha: canFormNombre,
-      tipo_deporte: canFormDeporte,
       precio_hora: parseFloat(canFormPrecio),
       techada: canFormTechada,
       ubicacion: canFormUbicacion,
@@ -1134,6 +1178,7 @@ function ReservasPage() {
                   </div>
                   <p className="deporte">⚽ {c.deporte} {c.techada && "• Techada"}</p>
                   {c.categoria && <p className="deporte">🏷️ {c.categoria}</p>}
+                  <p className="deporte">📅 {resumenDias(c)}</p>
                   {c.ubicacion && <p className="deporte">📍 {c.ubicacion}</p>}
                   {c.superficie && <p className="deporte">🏟️ {c.superficie}</p>}
                   <div className="precio">Bs {c.precio_hora} <span>/ hora</span></div>
@@ -1544,9 +1589,14 @@ function ReservasPage() {
                 <label>Fecha</label>
                 <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} required min={rangoFechaReserva().min} max={rangoFechaReserva().max} title={`Entre ${DIAS_MIN_ANTICIPACION} y ${DIAS_MAX_ANTICIPACION} días de anticipación.`} />
               </div>
+              {avisoCerrado && (
+                <div className="mensaje info">
+                  🔒 {avisoCerrado} Elige otra fecha para reservar.
+                </div>
+              )}
               <div className="form-group">
                 <label>Hora de inicio</label>
-                <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} min="06:00" max="23:00" required />
+                <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} min="06:00" max="23:00" required disabled={!!avisoCerrado} />
                 <small className="hora-hint">🕐 Horario de atención: 06:00 a 23:00</small>
               </div>
               {slots.length > 0 && (
@@ -1599,7 +1649,9 @@ function ReservasPage() {
                 </div>
               )}
               <div className="modal-actions">
-                <button type="submit" className="btn-primary">Reservar</button>
+                <button type="submit" className="btn-primary" disabled={!!avisoCerrado}>
+                  {avisoCerrado ? "No reservable ese día" : "Reservar"}
+                </button>
                 <button type="button" className="btn-secondary" onClick={cerrarModalReserva}>Cerrar</button>
               </div>
             </form>
@@ -1876,20 +1928,14 @@ function ReservasPage() {
             <form onSubmit={handleGuardarCancha}>
               <div className="form-group"><label>Nombre *</label><input type="text" value={canFormNombre} onChange={(e) => setCanFormNombre(e.target.value)} required minLength={2} maxLength={80} /></div>
               <div className="form-group">
-                <label>Tipo de deporte *</label>
-                <input type="text" value={canFormDeporte} onChange={(e) => setCanFormDeporte(e.target.value)} required minLength={2} maxLength={60} />
-                <div className="quick-selects">
-                  {["Fútbol", "Básquet", "Vóley", "Tenis", "Futsal"].map((d) => <button key={d} type="button" onClick={() => setCanFormDeporte(d)}>{d}</button>)}
-                </div>
-              </div>
-              <div className="form-group"><label>Precio por hora (Bs) *</label><input type="number" step="0.01" min="0.01" value={canFormPrecio} onChange={(e) => setCanFormPrecio(e.target.value)} required /></div>
-              <div className="form-group">
-                <label>Categoría *</label>
+                <label>Deporte / Categoría *</label>
                 <select value={canFormCategoria} onChange={(e) => setCanFormCategoria(e.target.value)} required>
-                  <option value="">Seleccione una categoría</option>
+                  <option value="">Seleccione el deporte</option>
                   {categorias.map((cat) => <option key={cat.id_categoria} value={cat.id_categoria}>{cat.nombre}</option>)}
                 </select>
+                <small className="hora-hint">El tipo de deporte se toma de la categoría, así no pueden contradecirse.</small>
               </div>
+              <div className="form-group"><label>Precio por hora (Bs) *</label><input type="number" step="0.01" min="0.01" value={canFormPrecio} onChange={(e) => setCanFormPrecio(e.target.value)} required /></div>
               <div className="form-group"><label>Ubicación</label><input type="text" value={canFormUbicacion} onChange={(e) => setCanFormUbicacion(e.target.value)} placeholder="Ej: Zona Norte" /></div>
               <div className="form-group">
                 <label>Superficie</label>

@@ -12,7 +12,9 @@ from models.reserva import Reserva
 from services.tarifas_service import (
     HORA_APERTURA_UI,
     HORA_CIERRE_UI,
+    dias_cerrados_por_cancha,
     horario_general,
+    nombres_dias,
 )
 from validators.cancha_validator import (
     MAX_IMAGENES_CANCHA,
@@ -36,6 +38,22 @@ def obtener_categoria(id_categoria):
     if not categoria:
         raise ValueError("La categoría indicada no existe.")
     return categoria
+
+
+def deporte_de_categoria(nombre_categoria):
+    """Deporte de una cancha a partir del nombre de su categoría.
+
+    La categoría es la única fuente de verdad del deporte: asi no se puede
+    registrar una cancha con "Futbol" como deporte y "Voley" como categoría.
+    El tamaño se separa del nombre ("Fútbol 11" -> "Fútbol") para que el
+    filtro por deporte agrupe las canchas de la misma disciplina.
+    """
+    if not nombre_categoria:
+        return "Deporte"
+    partes = str(nombre_categoria).strip().split()
+    if len(partes) > 1 and partes[-1].isdigit():
+        partes = partes[:-1]
+    return " ".join(partes).strip() or str(nombre_categoria).strip()
 
 
 def obtener_administrador(id_administrador):
@@ -90,7 +108,7 @@ def estado_calculado(cancha, ocupadas=None):
     return "ocupada" if cancha.id_cancha in ocupadas else "disponible"
 
 
-def serializar(cancha, ocupadas=None):
+def serializar(cancha, ocupadas=None, dias_cerrados=None):
     """to_dict de la cancha + estado calculado e info de la galería."""
     if ocupadas is None:
         ocupadas = ids_canchas_ocupadas_ahora()
@@ -101,6 +119,13 @@ def serializar(cancha, ocupadas=None):
     datos["total_imagenes"] = len(cancha.imagenes)
     primera = cancha.imagenes[0] if cancha.imagenes else None
     datos["imagen_preview_id"] = primera.id_imagen if primera else None
+
+    # Días de atención: el cliente los ve en la ficha de la cancha.
+    cerrados = list(dias_cerrados or [])
+    datos["dias_cerrados"] = nombres_dias(cerrados)
+    datos["dias_habiles"] = nombres_dias(
+        d for d in range(7) if d not in cerrados
+    )
     return datos
 
 
@@ -163,7 +188,10 @@ def listar_canchas_serializado(ocupadas=None, **kwargs):
     canchas = listar_canchas(**kwargs)
     if ocupadas is None:
         ocupadas = ids_canchas_ocupadas_ahora()
-    return [serializar(c, ocupadas) for c in canchas]
+    cerrados = dias_cerrados_por_cancha([c.id_cancha for c in canchas])
+    return [
+        serializar(c, ocupadas, cerrados.get(c.id_cancha, [])) for c in canchas
+    ]
 
 
 def obtener_cancha_por_id(id_cancha):
@@ -224,9 +252,17 @@ def crear_cancha(datos_texto, datos_crudos, id_usuario=None):
     estado = validar_estado(datos_crudos.get("estado") or "disponible")
     techada = convertir_bool(datos_crudos.get("techada", False))
 
+    # El deporte sale de la categoría: es el único campo que define el tipo
+    # de cancha y así no pueden contradecirse.
+    categoria = obtener_categoria(id_categoria)
+    tipo_deporte = (
+        (datos_texto.get("tipo_deporte") or "").strip()
+        or deporte_de_categoria(categoria.nombre)
+    )
+
     nueva = Cancha(
         nombre_cancha=datos_texto["nombre_cancha"],
-        tipo_deporte=datos_texto["tipo_deporte"],
+        tipo_deporte=tipo_deporte,
         precio_hora=precio,
         ubicacion=datos_texto.get("ubicacion"),
         estado=estado,
@@ -310,8 +346,12 @@ def modificar_cancha(id_cancha, datos_texto, datos_crudos, id_usuario=None):
 
     if "id_categoria" in datos_crudos:
         id_categoria = convertir_id_entero(datos_crudos["id_categoria"], "id_categoria")
-        obtener_categoria(id_categoria)
+        categoria = obtener_categoria(id_categoria)
         cancha.id_categoria = id_categoria
+        # La categoria manda sobre el deporte: si cambia, el deporte se
+        # recalcula (salvo que se mande uno explicito).
+        if "tipo_deporte" not in datos_texto:
+            cancha.tipo_deporte = deporte_de_categoria(categoria.nombre)
 
     if "id_administrador" in datos_crudos:
         id_administrador = convertir_id_entero(
@@ -324,23 +364,39 @@ def modificar_cancha(id_cancha, datos_texto, datos_crudos, id_usuario=None):
     return cancha
 
 
-def eliminar_cancha(id_cancha):
+def eliminar_cancha(id_cancha, id_usuario=None):
+    """
+    Elimina la cancha. Igual que en Gestión de Reservas: si tiene reservas o
+    eventos NO se borra (el historial debe quedar intacto), se desactiva
+    ("inactivo") y se avisa al administrador.
+    """
     cancha = obtener_cancha_por_id(id_cancha)
 
-    # Solo se puede eliminar físicamente si NO tiene reservas (ninguna) ni eventos.
-    if Reserva.query.filter_by(id_cancha=id_cancha).count() > 0:
-        raise ValueError(
-            "La cancha tiene reservas asociadas. No se puede eliminar; "
-            "márcala como inactivo."
+    reservas = Reserva.query.filter_by(id_cancha=id_cancha).count()
+    eventos = Evento.query.filter_by(id_cancha=id_cancha).count()
+
+    if reservas > 0 or eventos > 0:
+        motivo = (
+            f"Eliminación rechazada: {reservas} reserva(s) y {eventos} evento(s). "
+            "Se desactiva."
         )
-    if Evento.query.filter_by(id_cancha=id_cancha).count() > 0:
-        raise ValueError(
-            "La cancha tiene eventos asociados. No se puede eliminar; "
-            "márcala como inactivo."
-        )
+        if cancha.estado != "inactivo":
+            registrar_cambio_estado(cancha, "inactivo", motivo, id_usuario)
+            cancha.estado = "inactivo"
+            db.session.commit()
+        return {
+            "mensaje": (
+                "La cancha tiene reservas o eventos asociados. No se puede borrar; "
+                "se desactivó (inactiva) para no afectar el historial."
+            ),
+            "desactivada": True,
+            "reservas": reservas,
+            "eventos": eventos,
+        }
 
     db.session.delete(cancha)  # borra en cascada sus imágenes
     db.session.commit()
+    return {"mensaje": "Cancha eliminada.", "desactivada": False}
 
 
 def cambiar_estado_cancha(id_cancha, nuevo_estado, motivo=None, id_usuario=None):

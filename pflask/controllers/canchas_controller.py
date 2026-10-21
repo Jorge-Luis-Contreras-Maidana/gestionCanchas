@@ -223,8 +223,11 @@ def eliminar_cancha(id_cancha):
         return error_json("El id_cancha debe ser mayor que 0.")
 
     try:
-        canchas_service.eliminar_cancha(id_cancha)
-        return jsonify({"mensaje": "Cancha retirada con éxito."}), 200
+        resultado = canchas_service.eliminar_cancha(
+            id_cancha,
+            id_usuario=getattr(g, "current_user", None).id_usuario,
+        )
+        return jsonify(resultado), 200
 
     except ValueError as e:
         db.session.rollback()
