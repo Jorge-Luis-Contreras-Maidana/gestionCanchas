@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import "../App.css";
 import { useAuth } from '../context/AuthContext';
 import { AppLayout } from '../components/layout/AppLayout';
-import { imagenCanchaURL } from '../services/canchasService';
+import { imagenCanchaURL, canchasService, mensajeError, type CanchaImagen } from '../services/canchasService';
 import {
   DIAS_MAX_ANTICIPACION,
   DIAS_MIN_ANTICIPACION,
@@ -284,7 +284,8 @@ function ReservasPage() {
   const [canFormCategoria, setCanFormCategoria] = useState("");
   const [canFormEstado, setCanFormEstado] = useState("disponible");
   const [canFormMotivo, setCanFormMotivo] = useState("");
-  const [canFormImagen, setCanFormImagen] = useState("");
+  const [canImagenes, setCanImagenes] = useState<CanchaImagen[]>([]);
+  const [canFotosNuevas, setCanFotosNuevas] = useState<File[]>([]);
   const [canMensaje, setCanMensaje] = useState<{
     texto: string;
     tipo: "success" | "error" | "info";
@@ -806,7 +807,10 @@ function ReservasPage() {
   };
 
   // ---------- GESTIÓN CANCHAS ----------
-  const abrirModalCancha = (cancha?: Cancha) => {
+  const abrirModalCancha = async (cancha?: Cancha) => {
+    setCanMensaje(null);
+    setCanFotosNuevas([]);
+    setCanImagenes([]);
     if (cancha) {
       setCanchaEditando(cancha);
       setCanFormNombre(cancha.nombre);
@@ -818,7 +822,13 @@ function ReservasPage() {
       setCanFormCategoria(String(cancha.id_categoria || ""));
       setCanFormEstado(cancha.estado);
       setCanFormMotivo("");
-      setCanFormImagen(cancha.imagen_url || "");
+      // Fotos ya guardadas: se muestran para poder quitarlas o agregar más.
+      try {
+        const { data } = await canchasService.listarImagenes(cancha.id);
+        setCanImagenes(data);
+      } catch {
+        setCanImagenes([]);
+      }
     } else {
       setCanchaEditando(null);
       setCanFormNombre("");
@@ -830,10 +840,30 @@ function ReservasPage() {
       setCanFormCategoria(categorias[0]?.id_categoria.toString() || "");
       setCanFormEstado("disponible");
       setCanFormMotivo("");
-      setCanFormImagen("");
     }
-    setCanMensaje(null);
     setModalCancha(true);
+  };
+
+  const seleccionarFotosCancha = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const archivos = Array.from(e.target.files || []);
+    setCanFotosNuevas((prev) => [...prev, ...archivos].slice(0, 8));
+    e.target.value = "";
+  };
+
+  const quitarFotoNueva = (indice: number) => {
+    setCanFotosNuevas((prev) => prev.filter((_, i) => i !== indice));
+  };
+
+  const borrarFotoCancha = async (imagen: CanchaImagen) => {
+    if (!canchaEditando) return;
+    if (!window.confirm("¿Eliminar esta foto de la cancha?")) return;
+    try {
+      const { data } = await canchasService.eliminarImagen(canchaEditando.id, imagen.id_imagen);
+      setCanImagenes(data.imagenes);
+      cargarCanchas();
+    } catch (err) {
+      setCanMensaje({ texto: `❌ ${mensajeError(err)}`, tipo: "error" });
+    }
   };
 
   const handleGuardarCancha = async (e: any) => {
@@ -854,15 +884,29 @@ function ReservasPage() {
       id_administrador: usuario.id_administrador,
       estado: canFormEstado,
       motivo: canFormMotivo,
-      imagen_url: canFormImagen,
     };
     try {
+      let idCancha: number;
       if (canchaEditando) {
         await axios.put(`http://127.0.0.1:5000/api/admin/canchas/${canchaEditando.id}`, datos);
+        idCancha = canchaEditando.id;
         setCanMensaje({ texto: "✅ Cancha actualizada", tipo: "success" });
       } else {
-        await axios.post("http://127.0.0.1:5000/api/admin/canchas", datos);
+        const r = await axios.post("http://127.0.0.1:5000/api/admin/canchas", datos);
+        idCancha = r.data.id_cancha;
         setCanMensaje({ texto: "✅ Cancha creada", tipo: "success" });
+      }
+
+      // Las fotos se suben a la galería de la base de datos (no hace falta
+      // pegar ningún enlace).
+      if (canFotosNuevas.length > 0) {
+        const { data } = await canchasService.subirImagenes(idCancha, canFotosNuevas);
+        setCanImagenes(data.imagenes);
+        setCanFotosNuevas([]);
+        setCanMensaje({
+          texto: `✅ Cancha guardada con ${data.imagenes.length} foto(s)`,
+          tipo: "success",
+        });
       }
       cargarCanchas();
       setTimeout(() => {
@@ -1302,7 +1346,7 @@ function ReservasPage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>ID</th><th>Foto</th><th>Nombre</th><th>Deporte</th><th>Categoría</th><th>Ubicación</th><th>Superficie</th><th>Precio/h</th><th>Techada</th><th>Estado</th><th style={{ textAlign: "center" }}>Acciones</th>
+                      <th>ID</th><th>Foto</th><th>Nombre</th><th>Deporte</th><th>Categoría</th><th>Ubicación</th><th>Superficie</th><th>Precio/h</th><th>Techada</th><th>Estado</th><th className="col-acciones" style={{ textAlign: "center" }}>Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1310,7 +1354,13 @@ function ReservasPage() {
                       <tr key={c.id}>
                         <td><strong style={{ color: "var(--color-primary)" }}>#{c.id}</strong></td>
                         <td>
-                          {c.imagen_url ? (
+                          {c.imagen_preview_id ? (
+                            <img
+                              className="cancha-thumb"
+                              src={imagenCanchaURL(c.id, c.imagen_preview_id)}
+                              alt={c.nombre}
+                            />
+                          ) : c.imagen_url ? (
                             <img className="cancha-thumb" src={c.imagen_url} alt={c.nombre} />
                           ) : (
                             <span className="cancha-thumb cancha-thumb-placeholder">🏟️</span>
@@ -1324,10 +1374,10 @@ function ReservasPage() {
                         <td>Bs {c.precio_hora}</td>
                         <td>{c.techada ? "✅" : "❌"}</td>
                         <td><span className={`badge ${c.estado_calculado || c.estado}`}>{ETIQUETA_ESTADO_CANCHA[c.estado_calculado || c.estado] || c.estado}</span></td>
-                        <td>
+                        <td className="col-acciones">
                           <div className="acciones">
-                            <button className="btn-warning btn-sm" onClick={() => abrirModalCancha(c)}>✏️</button>
-                            <button className="btn-danger btn-sm" onClick={() => handleEliminarCancha(c.id, c.nombre)}>🗑️</button>
+                            <button className="btn-warning btn-sm btn-icono" title="Editar cancha" aria-label={`Editar ${c.nombre}`} onClick={() => abrirModalCancha(c)}>✏️</button>
+                            <button className="btn-danger btn-sm btn-icono" title="Eliminar cancha" aria-label={`Eliminar ${c.nombre}`} onClick={() => handleEliminarCancha(c.id, c.nombre)}>🗑️</button>
                           </div>
                         </td>
                       </tr>
@@ -1872,26 +1922,59 @@ function ReservasPage() {
                 </div>
               )}
               <div className="form-group">
-                <label>Imagen (URL)</label>
-                <input type="url" value={canFormImagen} onChange={(e) => setCanFormImagen(e.target.value)} placeholder="https://..." pattern="https?://.+|\.{0}" maxLength={500} title="Debe empezar con http:// o https://" />
-                {canFormImagen ? (
-                  <img
-                    className="cancha-imagen-preview"
-                    src={canFormImagen}
-                    alt="Vista previa"
-                    style={{
-                      marginTop: "10px",
-                      width: "100%",
-                      height: "160px",
-                      objectFit: "cover",
-                      borderRadius: "8px",
-                      border: "1px solid var(--color-border)",
-                    }}
-                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }}
-                  />
-                ) : (
-                  <small className="hora-hint">💡 Deja vacío si no quieres foto. Ej: url de Unsplash/Pexels.</small>
+                <label>📷 Fotos ({canImagenes.length + canFotosNuevas.length} de 8)</label>
+                <small className="hora-hint">
+                  JPG, PNG o WEBP de hasta 4 MB. Se guardan en la base de datos: no hace
+                  falta pegar ningún enlace.
+                </small>
+
+                {canImagenes.length > 0 && (
+                  <div className="galeria-mini">
+                    {canImagenes.map((img) => (
+                      <div key={img.id_imagen} className="galeria-mini-item">
+                        <img
+                          src={imagenCanchaURL(canchaEditando!.id, img.id_imagen)}
+                          alt={img.nombre_archivo || "Foto de la cancha"}
+                        />
+                        <button
+                          type="button"
+                          className="galeria-quitar"
+                          title="Eliminar esta foto"
+                          onClick={() => borrarFotoCancha(img)}
+                        >
+                          ✖
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
+
+                {canFotosNuevas.length > 0 && (
+                  <div className="galeria-mini">
+                    {canFotosNuevas.map((archivo, i) => (
+                      <div key={`${archivo.name}-${i}`} className="galeria-mini-item">
+                        <img src={URL.createObjectURL(archivo)} alt={archivo.name} />
+                        <button
+                          type="button"
+                          className="galeria-quitar"
+                          title="Quitar de la selección"
+                          onClick={() => quitarFotoNueva(i)}
+                        >
+                          ✖
+                        </button>
+                        <span className="galeria-nueva-tag">Nueva</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  multiple
+                  onChange={seleccionarFotosCancha}
+                  disabled={canImagenes.length + canFotosNuevas.length >= 8}
+                />
               </div>
               <div className="modal-actions">
                 <button type="submit" className="btn-success">Guardar</button>

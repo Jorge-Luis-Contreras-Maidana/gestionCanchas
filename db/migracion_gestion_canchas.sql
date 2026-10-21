@@ -205,4 +205,164 @@ UPDATE public.cancha
  WHERE horario_apertura IS NULL
     OR horario_cierre   IS NULL;
 
+-- 7) Fecha de creación de la reserva ---------------------------------
+-- La columna es NOT NULL: si el INSERT llega sin valor (porque el modelo
+-- no lo envía) la creación de reservas falla con error 500.
+ALTER TABLE public.reserva
+    ALTER COLUMN fecha_creacion SET DEFAULT CURRENT_TIMESTAMP;
+
+-- 8) Historial de reservas: el modelo usa "tipo_cambio" ---------------
+-- La tabla se había creado con la columna "accion": al insertar el
+-- historial (creación, cancelación, pago) la BD rechazaba la columna.
+ALTER TABLE public.historial_reserva
+    ADD COLUMN IF NOT EXISTS tipo_cambio character varying(30);
+
+UPDATE public.historial_reserva
+   SET tipo_cambio = accion
+ WHERE tipo_cambio IS NULL
+   AND accion IS NOT NULL;
+
+ALTER TABLE public.historial_reserva
+    ALTER COLUMN tipo_cambio SET NOT NULL;
+
+-- La columna vieja "accion" ya no la usa nadie: se copia y se elimina.
+ALTER TABLE public.historial_reserva
+    DROP COLUMN IF EXISTS accion;
+
+-- 9) Tablas que quedaron con la estructura anterior -------------------
+-- Los modelos se reescribieron (pagos, devoluciones, caja, reportes,
+-- notificaciones y analítica) pero estas tablas seguian con el esquema
+-- viejo: cualquier INSERT de esos modulos fallaba y abortaba la
+-- transaccion (por eso "crear reserva" devolvia 500).
+-- Todas estaban vacias, asi que se recrean con la estructura del modelo.
+DROP TABLE IF EXISTS public.pago_auditoria;
+CREATE TABLE public.pago_auditoria (
+    id_auditoria SERIAL NOT NULL,
+    id_pago INTEGER NOT NULL,
+    id_usuario INTEGER,
+    resultado VARCHAR(20) NOT NULL,
+    monto_comprobante NUMERIC(10, 2),
+    fecha_comprobante DATE,
+    metodo_comprobante VARCHAR(50),
+    referencia_comprobante VARCHAR(100),
+    observaciones TEXT,
+    fecha TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    PRIMARY KEY (id_auditoria),
+    FOREIGN KEY (id_pago) REFERENCES public.pago (id_pago) ON DELETE CASCADE,
+    FOREIGN KEY (id_usuario) REFERENCES public.usuario (id_usuario) ON DELETE SET NULL
+);
+
+DROP TABLE IF EXISTS public.devolucion_solicitud;
+CREATE TABLE public.devolucion_solicitud (
+    id_solicitud SERIAL NOT NULL,
+    id_pago INTEGER NOT NULL,
+    id_cliente INTEGER,
+    id_usuario_solicitante INTEGER,
+    id_usuario_decision INTEGER,
+    monto NUMERIC(10, 2) NOT NULL,
+    motivo TEXT NOT NULL,
+    estado VARCHAR(20) NOT NULL,
+    motivo_decision TEXT,
+    monto_devuelto NUMERIC(10, 2),
+    fecha_devolucion TIMESTAMP WITHOUT TIME ZONE,
+    fecha_solicitud TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    fecha_decision TIMESTAMP WITHOUT TIME ZONE,
+    PRIMARY KEY (id_solicitud),
+    FOREIGN KEY (id_pago) REFERENCES public.pago (id_pago) ON DELETE CASCADE,
+    FOREIGN KEY (id_cliente) REFERENCES public.cliente (id_cliente) ON DELETE SET NULL,
+    FOREIGN KEY (id_usuario_solicitante) REFERENCES public.usuario (id_usuario) ON DELETE SET NULL,
+    FOREIGN KEY (id_usuario_decision) REFERENCES public.usuario (id_usuario) ON DELETE SET NULL
+);
+
+DROP TABLE IF EXISTS public.turno_caja;
+CREATE TABLE public.turno_caja (
+    id_turno SERIAL NOT NULL,
+    id_empleado INTEGER NOT NULL,
+    id_usuario_cierre INTEGER,
+    fecha DATE NOT NULL,
+    hora_apertura TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    hora_cierre TIMESTAMP WITHOUT TIME ZONE,
+    monto_esperado_efectivo NUMERIC(12, 2) NOT NULL,
+    monto_fisico NUMERIC(12, 2),
+    diferencia NUMERIC(12, 2),
+    total_qr NUMERIC(12, 2) NOT NULL,
+    total_transferencia NUMERIC(12, 2) NOT NULL,
+    total_tarjeta NUMERIC(12, 2) NOT NULL,
+    cantidad_pagos INTEGER NOT NULL,
+    cantidad_devoluciones INTEGER NOT NULL,
+    estado VARCHAR(20) NOT NULL,
+    observaciones TEXT,
+    PRIMARY KEY (id_turno),
+    FOREIGN KEY (id_empleado) REFERENCES public.empleado (id_empleado) ON DELETE RESTRICT,
+    FOREIGN KEY (id_usuario_cierre) REFERENCES public.usuario (id_usuario) ON DELETE SET NULL
+);
+
+DROP TABLE IF EXISTS public.reporte;
+CREATE TABLE public.reporte (
+    id_reporte SERIAL NOT NULL,
+    tipo VARCHAR(30) NOT NULL,
+    fecha_generado DATE NOT NULL,
+    descripcion TEXT,
+    id_administrador INTEGER NOT NULL,
+    PRIMARY KEY (id_reporte),
+    FOREIGN KEY (id_administrador) REFERENCES public.administrador (id_administrador)
+);
+
+-- La notificacion apunta a la plantilla: se suelta la llave antes de
+-- recrear la tabla y se vuelve a poner despues.
+ALTER TABLE public.notificacion
+    DROP CONSTRAINT IF EXISTS notificacion_id_plantilla_fkey;
+
+DROP TABLE IF EXISTS public.plantilla_notificacion;
+CREATE TABLE public.plantilla_notificacion (    id_plantilla SERIAL NOT NULL,
+    codigo VARCHAR(40) NOT NULL,
+    nombre VARCHAR(100) NOT NULL,
+    tipo_evento VARCHAR(40) NOT NULL,
+    canal VARCHAR(20) NOT NULL,
+    asunto VARCHAR(200) NOT NULL,
+    cuerpo TEXT NOT NULL,
+    activa BOOLEAN NOT NULL,
+    id_administrador INTEGER,
+    fecha_creacion TIMESTAMP WITHOUT TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (id_plantilla),
+    UNIQUE (codigo),
+    FOREIGN KEY (id_administrador) REFERENCES public.administrador (id_administrador)
+        ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+ALTER TABLE public.notificacion
+    ADD CONSTRAINT notificacion_id_plantilla_fkey
+    FOREIGN KEY (id_plantilla) REFERENCES public.plantilla_notificacion (id_plantilla)
+        ON DELETE SET NULL ON UPDATE CASCADE;
+
+DROP TABLE IF EXISTS public.notificacion_intento;
+CREATE TABLE public.notificacion_intento (
+    id_intento SERIAL NOT NULL,
+    id_notificacion INTEGER NOT NULL,
+    numero_intento INTEGER NOT NULL,
+    canal VARCHAR(20) NOT NULL,
+    estado VARCHAR(20) NOT NULL,
+    detalle TEXT,
+    fecha TIMESTAMP WITHOUT TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (id_intento),
+    FOREIGN KEY (id_notificacion) REFERENCES public.notificacion (id_notificacion)
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+DROP TABLE IF EXISTS public.analisis_generado;
+CREATE TABLE public.analisis_generado (
+    id_analisis SERIAL NOT NULL,
+    tipo_analisis VARCHAR(30) NOT NULL,
+    fecha_inicio DATE NOT NULL,
+    fecha_fin DATE NOT NULL,
+    parametros JSON NOT NULL,
+    resultado JSON,
+    metricas JSON,
+    total_registros INTEGER NOT NULL,
+    fecha_generado TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    id_administrador INTEGER NOT NULL,
+    PRIMARY KEY (id_analisis),
+    FOREIGN KEY (id_administrador) REFERENCES public.administrador (id_administrador) ON DELETE CASCADE
+);
+
 COMMIT;

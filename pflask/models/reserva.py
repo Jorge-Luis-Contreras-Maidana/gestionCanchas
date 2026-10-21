@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from extensions import db
 
 
@@ -9,7 +11,9 @@ class Reserva(db.Model):
     hora_inicio = db.Column(db.Time, nullable=False)
     hora_fin = db.Column(db.Time, nullable=False)
     duracion = db.Column(db.Interval)
-    fecha_creacion = db.Column(db.DateTime, nullable=False)
+    # Sin este valor el INSERT manda NULL y la columna (NOT NULL) revienta:
+    # el modelo debe enviar la fecha, no confiar en el default de la BD.
+    fecha_creacion = db.Column(db.DateTime, nullable=False, default=datetime.now)
     estado_reserva = db.Column(db.String(20), nullable=False)
     motivo_cancelacion = db.Column(db.Text)
     id_cliente = db.Column(

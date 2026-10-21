@@ -167,9 +167,19 @@ def aplicar_horarios(id_cancha, dias, id_usuario=None):
 
         if not item.get("hora_apertura") or not item.get("hora_cierre"):
             raise ValueError(f"Falta la hora de apertura o cierre del {DIAS[dia]}.")
-        guardar_horario(
-            id_cancha, dia, _hora(item["hora_apertura"]), _hora(item["hora_cierre"])
-        )
+
+        apertura = _hora(item["hora_apertura"])
+        cierre = _hora(item["hora_cierre"])
+        apertura_general, cierre_general = horario_general(cancha)
+
+        # Un dia con el mismo horario que el general no necesita fila propia:
+        # asi sigue al general cuando el administrador lo cambie despues.
+        if apertura == apertura_general and cierre == cierre_general:
+            if fila is not None:
+                db.session.delete(fila)
+            continue
+
+        guardar_horario(id_cancha, dia, apertura, cierre)
     db.session.commit()
     return listar_horarios(id_cancha)
 
